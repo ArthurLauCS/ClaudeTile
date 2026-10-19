@@ -12,6 +12,7 @@ mod json;
 mod menu;
 mod quota;
 mod sessions;
+mod sync;
 mod sys;
 mod time;
 mod toast;
@@ -68,6 +69,7 @@ const DEFAULT_W: f32 = 380.0;
 enum Msg {
     Scan(Days, HashMap<String, SessionInfo>),
     Quota(Fetch),
+    Sync(Option<sync::Sync>),
 }
 
 pub struct App {
@@ -132,6 +134,10 @@ pub struct App {
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
     scan_pending: bool,
+    /// ~/.claude 的同步状态，None = 这台机器不用 sync.sh
+    pub sync: Option<sync::Sync>,
+    /// sync.log 上次读时的修改时间
+    sync_mtime: Option<std::time::SystemTime>,
 }
 
 static mut APP: *mut App = std::ptr::null_mut();
@@ -622,8 +628,29 @@ impl App {
                     self.invalidate();
                 }
                 Msg::Quota(r) => self.on_quota(r),
+                Msg::Sync(s) => {
+                    self.sync = s;
+                    self.invalidate();
+                }
             }
         }
+    }
+
+    /// sync.log 变了（同步跑完）或到了计划任务的下次运行时间，就在后台重读同步状态
+    fn check_sync(&mut self) {
+        let m = std::fs::metadata(self.claude.join("sync.log")).and_then(|m| m.modified()).ok();
+        let due = self.sync.as_ref().and_then(|s| s.next).is_some_and(|n| time::now() >= n);
+        if m == self.sync_mtime && !due {
+            return;
+        }
+        self.sync_mtime = m;
+        let (claude, tx, hwnd) = (self.claude.clone(), self.tx.clone(), self.hwnd.0 as usize);
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Sync(sync::load(&claude)));
+            unsafe {
+                let _ = PostMessageW(Some(HWND(hwnd as _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
+            }
+        });
     }
 
     fn tick(&mut self) {
@@ -632,6 +659,7 @@ impl App {
         if time::now() >= self.next_poll {
             self.fetch_quota();
         }
+        self.check_sync();
         self.save_days();
     }
 }
@@ -991,6 +1019,8 @@ fn main() {
             rx,
             tx: tx.clone(),
             scan_pending: false,
+            sync: None,
+            sync_mtime: None,
         });
         APP = &mut *a;
         a.load_theme();
@@ -1015,7 +1045,8 @@ fn main() {
         sys::watch(claude.join("sessions"), false, hwnd, WM_APP_SESS);
         sys::watch(claude.join("projects"), true, hwnd, WM_APP_PROJ);
         a.fetch_quota();
-        // 15 秒一跳：确认会话进程还在、刷新倒计时、到点查额度、存用量历史
+        a.check_sync();
+        // 15 秒一跳：确认会话进程还在、刷新倒计时、到点查额度、看同步状态、存用量历史
         SetTimer(Some(hwnd), T_TICK, 15_000, None);
         if !a.cfg.hidden {
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);

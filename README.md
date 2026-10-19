@@ -8,7 +8,7 @@ A desktop status tile for Claude on Windows: see what your Claude Code sessions 
   <img src="docs/images/tile-en.png" width="380" alt="ClaudeTile showing usage limits, sessions and a token heatmap">
 </p>
 
-- A single ~570 KB exe, about 13 MB of private memory, close to 0% CPU when idle.
+- A single ~650 KB exe, about 13 MB of private memory, close to 0% CPU when idle.
 - Follows the system light / dark theme; adjustable opacity, down to a see-through tile.
 - English and Chinese interface.
 

@@ -1,5 +1,5 @@
 //! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放。
-//! 自上而下：标题行、额度、会话、Token 热力图、选中日 / 周的分项。高度随内容变，宽度可拖，热力图的周数跟着宽度走。
+//! 自上而下：标题行、~/.claude 同步状态（有 sync.log 时）、额度、会话、Token 热力图、选中日 / 周的分项。高度随内容变，宽度可拖，热力图的周数跟着宽度走。
 
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -11,7 +11,7 @@ use crate::config::{en, tr};
 use crate::quota::{self, Fetch, Kind};
 use crate::sessions::State;
 use crate::usage::{self, fmt_tokens};
-use crate::{App, time};
+use crate::{App, sync, time};
 
 pub const PAD: f32 = 16.0;
 const GAP: f32 = 14.0;
@@ -344,6 +344,9 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
     let stale = a.stale || !matches!(a.quota, Fetch::Ok(_)) && a.quota_at != 0;
     p.text(&status, rect(l + 120.0, y + 1.0, r - 30.0, y + 24.0), &f.f11, if stale { th.warn } else { th.muted }, Align::R);
     y += 24.0 + GAP;
+    if let Some(s) = &a.sync {
+        y = sync_rows(&p, a, s, w, y);
+    }
 
     // 三个框：额度、会话、Token。各自裁剪、可滚动，框下方的空隙可以拖动改框高
     let fixed = y + 2.0 * SPLIT + BOTTOM;
@@ -395,6 +398,38 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         y += gap;
     }
     Frame { h: y, hits, nat, boxes }
+}
+
+/// 本地时间 07:41，不是今天时带上日期 10-18 07:41
+fn fmt_clock(t: i64) -> String {
+    let (d, h, m) = time::local(t);
+    let (_, mo, dd) = time::civil(d);
+    if d == time::today() { format!("{h:02}:{m:02}") } else { format!("{mo:02}-{dd:02} {h:02}:{m:02}") }
+}
+
+/// ~/.claude 同步：上次同步的时间和结果、失败原因或和远端差几个提交、下次同步时间。返回下一行的 y
+fn sync_rows(p: &P, a: &App, s: &sync::Sync, w: f32, y: f32) -> f32 {
+    let (th, f) = (&a.theme, &a.fonts);
+    let (l, r) = (PAD, w - PAD);
+    p.text(tr("同步", "Sync"), rect(l, y, r, y + 16.0), &f.f12, th.text, Align::L);
+    let (word, c) = if s.ok { (tr("成功", "OK"), th.ok) } else { (tr("失败", "Failed"), th.warn) };
+    let ww = p.text(word, rect(l, y, r, y + 16.0), &f.f12b, c, Align::R);
+    p.text(&format!("{} {}", tr("上次", "Last"), fmt_clock(s.at)), rect(l, y, r - ww - 8.0, y + 16.0), &f.f11, th.muted, Align::R);
+    let y = y + 20.0;
+    let next = match s.next {
+        Some(t) => format!("{} {}", tr("下次", "Next"), fmt_clock(t)),
+        None => tr("下次：开 Claude 时", "Next: when Claude starts").into(),
+    };
+    let nw = p.text(&next, rect(l, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+    let (msg, c) = match s.diverge {
+        _ if !s.ok => (s.err.clone(), th.warn),
+        Some((0, 0)) => (tr("和远端一致", "Up to date").into(), th.muted),
+        Some((n, 0)) => (if en() { format!("{n} commits not pushed") } else { format!("{n} 个提交未推送") }, th.warn),
+        Some((_, n)) => (if en() { format!("{n} commits behind remote") } else { format!("落后远端 {n} 个提交") }, th.warn),
+        None => (String::new(), th.muted),
+    };
+    p.text(&msg, rect(l, y, r - nw - 12.0, y + 16.0), &f.f11, c, Align::L);
+    y + 16.0 + GAP
 }
 
 fn quota_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
