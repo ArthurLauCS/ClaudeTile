@@ -8,7 +8,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
   <img src="docs/images/tile-zh.png" width="380" alt="ClaudeTile：额度、会话和 Token 热力图">
 </p>
 
-- 单个约 650 KB 的 exe，私有内存约 13 MB，空闲时 CPU 接近 0%。
+- 单个约 720 KB 的 exe，私有内存约 13 MB，空闲时 CPU 接近 0%。
 - 跟随系统深浅色；透明度可调，可以调到透出壁纸。
 - 中英文界面。
 
