@@ -182,11 +182,6 @@ fn fit(r: &RECT, wa: RECT) -> (i32, i32) {
     (r.left.min(wa.right - w).max(wa.left), r.top.min(wa.bottom - h).max(wa.top))
 }
 
-/// 桌面窗口：不置顶时磁贴以它为所有者，始终在桌面之上、其他窗口之下
-fn desktop_owner() -> Option<HWND> {
-    unsafe { FindWindowW(w!("Progman"), PCWSTR::null()).ok() }
-}
-
 fn keep_on_screen(hwnd: HWND) {
     let mut r = RECT::default();
     unsafe {
@@ -527,13 +522,8 @@ impl App {
     fn set_topmost(&mut self, on: bool) {
         self.cfg.topmost = on;
         self.save_cfg();
-        // 以桌面（Progman）为所有者的窗口设不成置顶：置顶时先去掉所有者，取消置顶时再挂回桌面、回到桌面这一层
         unsafe {
-            SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, if on { 0 } else { desktop_owner().map_or(0, |h| h.0 as isize) });
             let _ = SetWindowPos(self.hwnd, Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            if !on {
-                let _ = SetWindowPos(self.hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
         }
     }
 
@@ -692,15 +682,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 mm.ptMinTrackSize.x = (view::MIN_W * scale(hwnd)) as i32;
             }
             WM_EXITSIZEMOVE => a.save_pos(),
-            WM_WINDOWPOSCHANGING => {
-                // 不置顶时贴在桌面这一层，不盖住其他程序
-                let pos = &mut *(lp.0 as *mut WINDOWPOS);
-                if pos.flags & SWP_NOZORDER == SET_WINDOW_POS_FLAGS(0) && !a.cfg.topmost {
-                    pos.hwndInsertAfter = HWND_BOTTOM;
-                }
-            }
-            // 点磁贴不抢焦点
-            WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+            // 置顶时点磁贴不抢焦点；不置顶时和普通窗口一样，点了激活、盖到其他窗口上面，点别的程序再被盖住。
+            // 菜单开着时也不激活：否则菜单先因失活关掉，这次点击会落到磁贴的按钮上
+            WM_MOUSEACTIVATE if a.cfg.topmost || a.menu.is_some() => return LRESULT(MA_NOACTIVATE as isize),
             WM_MOUSEMOVE => {
                 if let Some(i) = a.dragging {
                     let mut p = POINT::default();
@@ -939,7 +923,7 @@ fn main() {
             let w = (DEFAULT_W * s) as i32;
             cfg.pos = [wa.right - w - (24.0 * s) as i32, wa.top + (24.0 * s) as i32, w];
         }
-        // 窗口用桌面（Progman）做所有者：不置顶时始终在桌面之上、其他窗口之下，不出现在任务栏和 Alt+Tab 里
+        // 工具窗口：不出现在任务栏和 Alt+Tab 里
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP | if topmost { WS_EX_TOPMOST } else { WINDOW_EX_STYLE(0) },
             CLASS,
@@ -949,7 +933,7 @@ fn main() {
             cfg.pos[1],
             cfg.pos[2],
             (400.0 * s) as i32,
-            if topmost { None } else { desktop_owner() },
+            None,
             None,
             None,
             None,
