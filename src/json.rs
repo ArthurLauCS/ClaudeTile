@@ -48,6 +48,27 @@ impl Json {
     }
 }
 
+/// 顶层对象里某个字段的值在原文里的位置，用来只替换这一段、别处原样保留（切换账号改 ~/.claude.json 的 oauthAccount）
+pub fn span(s: &str, key: &str) -> Option<std::ops::Range<usize>> {
+    let mut p = P { b: s.as_bytes(), i: 0 };
+    p.ws();
+    p.eat("{")?;
+    loop {
+        p.ws();
+        let k = p.string()?;
+        p.ws();
+        p.eat(":")?;
+        p.ws();
+        let st = p.i;
+        p.value()?;
+        if k == key {
+            return Some(st..p.i);
+        }
+        p.ws();
+        p.eat(",")?;
+    }
+}
+
 struct P<'a> {
     b: &'a [u8],
     i: usize,
@@ -175,5 +196,9 @@ mod tests {
         assert_eq!(Json::parse(r#"{"中文":"值"}"#).unwrap().get("中文").str(), Some("值"));
         assert!(Json::parse("{\"a\":1").is_none());
         assert!(Json::parse("[1,2] x").is_none());
+        let s = r#"{ "a": {"b":[1,"}"]}, "o" : {"e":"x"} }"#;
+        assert_eq!(&s[span(s, "o").unwrap()], r#"{"e":"x"}"#);
+        assert_eq!(span(s, "e"), None);
+        assert_eq!(span("{}", "o"), None);
     }
 }

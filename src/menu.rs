@@ -30,10 +30,11 @@ pub const OPACITY_MIN: u32 = 20;
 pub enum Id {
     Opacity,
     Top,
-    Cache,
+    Ping,
     Auto,
     Alert(u32),
     Lang(bool),
+    AddAccount,
     Refresh,
     Layout,
     Hide,
@@ -66,13 +67,14 @@ fn rows(a: &App) -> Vec<Row> {
         Row::Slider,
         Row::Sep,
         Row::Switch(Id::Top, tr("置顶显示", "Always on top"), a.cfg.topmost),
-        Row::Switch(Id::Cache, tr("Token 计入缓存读取", "Count cache reads"), a.cfg.cache_read),
+        Row::Switch(Id::Ping, tr("空闲时自动打卡（开 5 小时窗口）", "Auto-start idle 5h windows"), a.cfg.ping),
         Row::Switch(Id::Auto, tr("开机自启", "Start with Windows"), sys::autostart()),
         Row::Seg(tr("额度提醒", "Usage alert"), [70, 80, 90, 0].iter().map(|&v| (Id::Alert(v), alert_label(v), a.cfg.alert == v)).collect()),
         // 语言入口和选项都带英文，切到看不懂的语言后也能找回来
         Row::Seg(tr("语言/Language", "Language"), vec![(Id::Lang(false), "中文/Chinese", !en()), (Id::Lang(true), "English", en())]),
         Row::Sep,
-        // Segoe Fluent Icons：E72C 刷新，E7A7 撤销，ED1A 隐藏，E890 显示，E7E8 电源
+        // Segoe Fluent Icons：E8FA 添加联系人，E72C 刷新，E7A7 撤销，ED1A 隐藏，E890 显示，E7E8 电源
+        Row::Act(Id::AddAccount, "\u{E8FA}", tr("添加账号…", "Add account…")),
         Row::Act(Id::Refresh, "\u{E72C}", tr("立即刷新", "Refresh now")),
         Row::Act(Id::Layout, "\u{E7A7}", tr("恢复默认布局", "Reset layout")),
         if a.cfg.hidden { Row::Act(Id::Hide, "\u{E890}", tr("显示磁贴", "Show tile")) } else { Row::Act(Id::Hide, "\u{ED1A}", tr("隐藏磁贴", "Hide tile")) },

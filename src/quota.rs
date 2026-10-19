@@ -94,24 +94,23 @@ pub fn parse(s: &str) -> Option<Vec<Window>> {
     (!v.is_empty()).then_some(v)
 }
 
-fn proxy(claude_dir: &Path) -> Option<String> {
+/// 原样返回（子进程的 HTTPS_PROXY 要带协议）；WinHTTP 用时再去掉协议
+pub fn proxy(claude_dir: &Path) -> Option<String> {
     const KEYS: [&str; 6] = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"];
     let from_env = KEYS.iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
     let from_settings = || {
         let j = Json::parse(&std::fs::read_to_string(claude_dir.join("settings.json")).ok()?)?;
         KEYS.iter().find_map(|k| j.get("env").get(k).str().filter(|v| !v.is_empty()).map(str::to_string))
     };
-    let p = from_env.or_else(from_settings)?;
-    // WinHTTP 要 host:port，不带协议和末尾斜杠
-    Some(p.split("://").last().unwrap_or(&p).trim_end_matches('/').to_string())
+    from_env.or_else(from_settings)
 }
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
-/// 阻塞调用，在后台线程里跑
-pub fn fetch(claude_dir: &Path, fake: Option<&Path>) -> Fetch {
+/// 用 dir 里凭证的账号查额度。阻塞调用，在后台线程里跑
+pub fn fetch(dir: &Path, proxy: Option<&str>, fake: Option<&Path>) -> Fetch {
     if let Some(f) = fake {
         // 测试用：文件读不到算临时失败，内容认不出算接口变了
         return match std::fs::read_to_string(f) {
@@ -119,11 +118,11 @@ pub fn fetch(claude_dir: &Path, fake: Option<&Path>) -> Fetch {
             Err(e) => Fetch::Err(e.to_string()),
         };
     }
-    let Some(c) = creds(claude_dir) else { return Fetch::NoLogin };
+    let Some(c) = creds(dir) else { return Fetch::NoLogin };
     if c.expires > 0 && c.expires < time::now() {
         return Fetch::Expired;
     }
-    match get(&c.token, proxy(claude_dir).as_deref()) {
+    match get(&c.token, proxy) {
         Ok((200, body)) => parse(&body).map_or(Fetch::Changed("unrecognized response".into()), Fetch::Ok),
         Ok((401, _)) => Fetch::Expired,
         Ok((code @ (400 | 403 | 404 | 410), _)) => Fetch::Changed(format!("HTTP {code}")),
@@ -144,7 +143,8 @@ impl Drop for H {
 
 fn get(token: &str, proxy: Option<&str>) -> Result<(u32, String)> {
     unsafe {
-        let p = proxy.map(wide);
+        // WinHTTP 要 host:port，不带协议和末尾斜杠
+        let p = proxy.map(|p| wide(p.split("://").last().unwrap_or(p).trim_end_matches('/')));
         let (access, pp) = match &p {
             Some(p) => (WINHTTP_ACCESS_TYPE_NAMED_PROXY, PCWSTR(p.as_ptr())),
             None => (WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null()),

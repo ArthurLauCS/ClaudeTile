@@ -11,7 +11,7 @@ use crate::config::{en, tr};
 use crate::quota::{self, Fetch, Kind};
 use crate::sessions::State;
 use crate::usage::{self, fmt_tokens};
-use crate::{App, sync, time};
+use crate::{App, accounts, sync, time};
 
 pub const PAD: f32 = 16.0;
 const GAP: f32 = 14.0;
@@ -31,6 +31,10 @@ pub enum Hit {
     /// 按周显示时的一周，值是周一的天号
     Week(i32),
     Toggle(bool),
+    /// Token 合计算不算缓存读取的开关
+    Cache,
+    /// 账号列表里第 i 个其他账号，点了切过去
+    Account(usize),
     Quota,
     /// 右上角的置顶按钮
     Pin,
@@ -475,8 +479,46 @@ fn quota_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit)>
         }
         Fetch::Err(_) => note(tr("额度暂时读不到，稍后自动重试（点这里立即重试）", "Usage unavailable, retrying soon (click to retry)"), &mut y),
     }
+    if !a.accounts.is_empty() {
+        y = account_rows(p, a, w, y + 14.0, hits);
+    }
     hits.push((rect(0.0, -4.0, w, y + 4.0), Hit::Quota));
     y
+}
+
+/// 多账号：当前账号在最上面，每个账号一行，下面一条 5 小时额度条；点其他账号切过去。返回下一行的 y
+fn account_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let (th, f) = (&a.theme, &a.fonts);
+    let (l, r) = (PAD, w - PAD);
+    p.text(tr("账号", "Accounts"), rect(l, y, r, y + 18.0), &f.f12b, th.text, Align::L);
+    p.text(tr("点击切换", "Click to switch"), rect(l, y + 1.0, r, y + 18.0), &f.f11, th.muted, Align::R);
+    y += 22.0;
+    let me = if a.email.is_empty() { tr("当前账号", "Current account") } else { a.email.as_str() };
+    let rows = std::iter::once((None, me, &a.quota)).chain(a.accounts.iter().enumerate().map(|(i, x)| (Some(i), x.email.as_str(), &x.quota)));
+    for (i, email, q) in rows {
+        if let Some(i) = i {
+            let row = rect(l - 8.0, y - 4.0, r + 8.0, y + 30.0);
+            if a.hover == Some(Hit::Account(i)) {
+                p.fill(row, 6.0, th.hover);
+            }
+            hits.push((row, Hit::Account(i)));
+        }
+        let (txt, pct) = match (accounts::pcts(q), q) {
+            (Some((s, wk)), _) => (if en() { format!("5h {s:.0}% · wk {wk:.0}%") } else { format!("5h {s:.0}% · 周 {wk:.0}%") }, s),
+            (_, Fetch::Expired) => (tr("登录已过期", "Login expired").into(), 0.0),
+            (_, Fetch::Err(e)) if e.is_empty() => (tr("读取中…", "Loading…").into(), 0.0),
+            _ => (tr("读不到额度", "Usage unavailable").into(), 0.0),
+        };
+        p.dot(l + 4.0, y + 9.0, 4.0, if i.is_none() { th.accent } else { th.faint });
+        let tw = p.text(&txt, rect(l, y + 1.0, r, y + 18.0), &f.f11, if pct > 0.0 { th.level(pct) } else { th.muted }, Align::R);
+        p.text(email, rect(l + 16.0, y, r - tw - 8.0, y + 18.0), if i.is_none() { &f.f12b } else { &f.f12 }, th.text, Align::L);
+        p.fill(rect(l + 16.0, y + 21.0, r, y + 25.0), 2.0, th.track);
+        if pct > 0.0 {
+            p.fill(rect(l + 16.0, y + 21.0, l + 16.0 + ((r - l - 16.0) * pct.min(100.0) as f32 / 100.0).max(4.0), y + 25.0), 2.0, th.level(pct));
+        }
+        y += 34.0;
+    }
+    y - 8.0
 }
 
 /// 会话框的标题行，画在框顶不滚动，返回高度
@@ -541,9 +583,19 @@ fn token_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
     let start = monday(today) - (weeks - 1) * 7;
     let cr = a.cfg.cache_read;
     let tw = p.text("Token", rect(l, y, r, y + 20.0), &f.f12b, th.text, Align::L);
+    // 含不含缓存读取的滑动开关，在日 / 周切换左边
+    let sx = r - 64.0 - 10.0 - 26.0;
+    let lw = p.text(tr("缓存", "Cache"), rect(l, y + 1.0, sx - 5.0, y + 20.0), &f.f11, th.muted, Align::R);
+    let sb = rect(sx - 5.0 - lw - 4.0, y, sx + 26.0 + 4.0, y + 20.0);
+    if a.hover == Some(Hit::Cache) {
+        p.fill(sb, 5.0, th.hover);
+    }
+    p.fill(rect(sx, y + 3.0, sx + 26.0, y + 17.0), 7.0, if cr { th.accent } else { th.track });
+    p.dot(if cr { sx + 19.0 } else { sx + 7.0 }, y + 10.0, 5.0, if cr { rgba(1.0, 1.0, 1.0, 1.0) } else { th.muted });
+    hits.push((sb, Hit::Cache));
     let sum: u64 = (start..=today).map(|d| usage::day_total(&a.days, d, cr)).sum();
     let span = if en() { format!("{weeks} weeks · {}", fmt_tokens(sum)) } else { format!("近 {weeks} 周 · {}", fmt_tokens(sum)) };
-    p.text(&span, rect(l + tw + 8.0, y + 1.0, r - 70.0, y + 20.0), &f.f11, th.muted, Align::L);
+    p.text(&span, rect(l + tw + 8.0, y + 1.0, sb.left - 4.0, y + 20.0), &f.f11, th.muted, Align::L);
     // 日 / 周切换
     for (i, (label, weekly)) in [(tr("日", "Day"), false), (tr("周", "Week"), true)].into_iter().enumerate() {
         let b = rect(r - 64.0 + i as f32 * 32.0, y, r - 32.0 + i as f32 * 32.0, y + 20.0);
