@@ -3,7 +3,7 @@
 
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime, TzSpecificLocalTimeToSystemTime};
 
 /// 1601 到 1970 的 100ns 数
 const EPOCH_DIFF: i64 = 116_444_736_000_000_000;
@@ -63,17 +63,39 @@ pub fn parse_iso(s: &str) -> Option<i64> {
     Some(t)
 }
 
-/// Unix 秒 → 本地天号
-pub fn local_day(t: i64) -> i32 {
+/// Unix 秒 → 本地 (天号, 时, 分)
+pub fn local(t: i64) -> (i32, u32, u32) {
     let v = t * 10_000_000 + EPOCH_DIFF;
     let ft = FILETIME { dwLowDateTime: v as u32, dwHighDateTime: (v >> 32) as u32 };
     let (mut utc, mut loc) = (SYSTEMTIME::default(), SYSTEMTIME::default());
     unsafe {
         if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut loc).is_err() {
-            return t.div_euclid(86400) as i32;
+            let s = t.rem_euclid(86400) as u32;
+            return (t.div_euclid(86400) as i32, s / 3600, s / 60 % 60);
         }
     }
-    days_from_civil(loc.wYear as i32, loc.wMonth as u32, loc.wDay as u32)
+    (days_from_civil(loc.wYear as i32, loc.wMonth as u32, loc.wDay as u32), loc.wHour as u32, loc.wMinute as u32)
+}
+
+/// Unix 秒 → 本地天号
+pub fn local_day(t: i64) -> i32 {
+    local(t).0
+}
+
+/// 本地时间的 OLE 日期（1899-12-30 起的天数，计划任务用它）→ Unix 秒；0 表示没有
+pub fn from_ole(d: f64) -> Option<i64> {
+    if !(d > 0.0) {
+        return None;
+    }
+    let (y, m, dd) = civil(d.floor() as i32 - 25569);
+    let s = ((d - d.floor()) * 86400.0).round() as u16;
+    let loc = SYSTEMTIME { wYear: y as u16, wMonth: m as u16, wDay: dd as u16, wHour: s / 3600, wMinute: s / 60 % 60, wSecond: s % 60, ..Default::default() };
+    let (mut utc, mut ft) = (SYSTEMTIME::default(), FILETIME::default());
+    unsafe {
+        TzSpecificLocalTimeToSystemTime(None, &loc, &mut utc).ok()?;
+        SystemTimeToFileTime(&utc, &mut ft).ok()?;
+    }
+    Some((((ft.dwHighDateTime as i64) << 32 | ft.dwLowDateTime as i64) - EPOCH_DIFF) / 10_000_000)
 }
 
 pub fn today() -> i32 {
@@ -103,5 +125,13 @@ mod tests {
         assert_eq!(parse_iso("2026-10-17T17:08:14.600000+00:00"), Some(z));
         assert_eq!(parse_iso("2026-10-17T19:08:14+02:00"), Some(z));
         assert_eq!(parse_iso("bad"), None);
+    }
+
+    #[test]
+    fn ole() {
+        // 2026-10-19 08:00 本地：OLE 日期 = 天号 + 25569
+        let t = from_ole(20745.0 + 25569.0 + 8.0 / 24.0).unwrap();
+        assert_eq!(local(t), (20745, 8, 0));
+        assert_eq!(from_ole(0.0), None);
     }
 }
