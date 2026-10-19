@@ -51,7 +51,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 - **Move:** drag the tile anywhere. It always stays fully on screen.
 - **Width:** drag the left or right edge. The heatmap shows more weeks when wider.
 - **Section heights:** drag the gap below the limits, sessions or token section. Each section scrolls with the mouse wheel when its content is taller. The sessions section shows 5 rows by default.
-- **Always on top:** the pin in the upper-right corner. When unpinned, the tile stays on the desktop layer below other windows.
+- **Always on top:** the pin in the upper-right corner. When unpinned, the tile behaves like a normal window: clicking or dragging it brings it above other windows, and clicking another window covers it again.
 - **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, counting cache reads, start with Windows, usage alert level, language, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
 - **Show / hide:** left-click the tray icon.
 
