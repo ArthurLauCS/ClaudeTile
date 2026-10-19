@@ -8,7 +8,7 @@ A desktop status tile for Claude on Windows: see what your Claude Code sessions 
   <img src="docs/images/tile-en.png" width="380" alt="ClaudeTile showing usage limits, sessions and a token heatmap">
 </p>
 
-- A single ~650 KB exe, about 13 MB of private memory, close to 0% CPU when idle.
+- A single ~720 KB exe, about 13 MB of private memory, close to 0% CPU when idle.
 - Follows the system light / dark theme; adjustable opacity, down to a see-through tile.
 - English and Chinese interface.
 
@@ -27,9 +27,11 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 
 **Usage limits.** The 5-hour and weekly limits with a progress bar and a reset countdown, plus per-model weekly limits when your plan has them. From the last 30 minutes of usage it estimates when the 5-hour limit will run out ("At this pace, runs out in 1h 20m").
 
+**Accounts.** Use several Claude subscriptions: **Add account…** in the menu opens a command window that runs `claude auth login` for the new account. With two or more accounts the usage box lists each one with its 5-hour bar and weekly percentage; click an account to switch Claude Code to it (new sessions use it; restart running ones). Turn on **Auto-start idle 5h windows** and the tile sends each account a tiny Haiku message (about 3k tokens) whenever its 5-hour window is not running, so the window starts counting while you are away.
+
 **Sessions.** Every running Claude Code session, from terminals and from the Claude desktop app: title, project, the tool it is running right now, and how long it has been in its current state. Sessions that need you (a permission prompt, a question) are listed first. Click a session to jump to its window.
 
-**Token heatmap.** One cell per day, one column per week, like GitHub contributions. Switch to **Week** for a bar per week. Click a day or a week to see that period by project and by model. The number of weeks follows the tile width. Cache reads are not counted by default, since they are dozens of times larger than everything else; turn them on in the menu.
+**Token heatmap.** One cell per day, one column per week, like GitHub contributions. Switch to **Week** for a bar per week. Click a day or a week to see that period by project and by model. The number of weeks follows the tile width. Cache reads are not counted by default, since they are dozens of times larger than everything else; turn them on with the **Cache** switch above the heatmap.
 
 **Tray icon.** Shows the 5-hour usage percentage. Its color shows the state:
 
@@ -52,7 +54,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 - **Width:** drag the left or right edge. The heatmap shows more weeks when wider.
 - **Section heights:** drag the gap below the limits, sessions or token section. Each section scrolls with the mouse wheel when its content is taller. The sessions section shows 5 rows by default.
 - **Always on top:** the pin in the upper-right corner. When unpinned, the tile behaves like a normal window: clicking or dragging it brings it above other windows, and clicking another window covers it again.
-- **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, counting cache reads, start with Windows, usage alert level, language, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
+- **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, auto-start idle 5h windows, start with Windows, usage alert level, language, add account, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
 - **Show / hide:** left-click the tray icon.
 
 <p align="center">
@@ -69,6 +71,7 @@ ClaudeTile only reads what Claude Code already keeps on your computer, and never
 | Session titles, current tool, tokens | Conversation transcripts in `%USERPROFILE%\.claude\projects` |
 | Desktop app session titles | `%APPDATA%\Claude\claude-code-sessions` |
 | Usage limits | `https://api.anthropic.com/api/oauth/usage`, using the sign-in token Claude Code saved in `%USERPROFILE%\.claude\.credentials.json` |
+| Other accounts | `%APPDATA%\ClaudeTile\accounts\<account>`, each the `CLAUDE_CONFIG_DIR` the account signed in with. Switching copies the current account's `.credentials.json` and the `oauthAccount` entry of `%USERPROFILE%\.claude.json` there and the chosen account's back |
 
 - This is the only network request ClaudeTile makes, about every 2 minutes. There is no telemetry. It uses the proxy from your environment variables or from `env` in `~/.claude/settings.json`, the same one Claude Code uses.
 - The usage endpoint is not a public API and may change. If it does, the tile and a notification tell you that ClaudeTile needs an update; sessions and token statistics keep working.

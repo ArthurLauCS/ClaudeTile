@@ -5,6 +5,7 @@
 //! --usage-file <文件> 用文件内容代替额度接口的返回；--dump <文件> 不开窗口，把读到的数据写成文本；
 //! --top 置顶；--light / --dark 强制主题；--lang zh|en 强制语言（后几个是截图走查用的）。
 
+mod accounts;
 mod config;
 mod gfx;
 mod icon;
@@ -70,6 +71,12 @@ enum Msg {
     Scan(Days, HashMap<String, SessionInfo>),
     Quota(Fetch),
     Sync(Option<sync::Sync>),
+    /// 其他账号的额度
+    Acct(PathBuf, Fetch),
+    /// 打卡完成：账号目录（None = 当前账号）、成没成功
+    Pinged(Option<PathBuf>, bool),
+    /// 添加账号的命令行窗口关了
+    Login(PathBuf),
 }
 
 pub struct App {
@@ -138,6 +145,14 @@ pub struct App {
     pub sync: Option<sync::Sync>,
     /// sync.log 上次读时的修改时间
     sync_mtime: Option<std::time::SystemTime>,
+    /// Claude Code 的全局配置（~/.claude.json），当前账号的 oauthAccount 在这里
+    global: PathBuf,
+    /// 当前账号的邮箱和其他登录过的账号
+    pub email: String,
+    pub accounts: Vec<accounts::Account>,
+    /// 当前账号正在打卡、下次可以打卡的时间
+    pinging: bool,
+    ping_at: i64,
 }
 
 static mut APP: *mut App = std::ptr::null_mut();
@@ -332,6 +347,11 @@ impl App {
                     self.save_cfg();
                 }
             }
+            Hit::Cache => {
+                self.cfg.cache_read = !self.cfg.cache_read;
+                self.save_cfg();
+            }
+            Hit::Account(i) => self.switch_to(i),
             Hit::Quota => self.fetch_quota(),
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
             Hit::Split(_) => {}
@@ -350,12 +370,103 @@ impl App {
         self.fetching = true;
         let (claude, fake, tx, hwnd) = (self.claude.clone(), self.fake.clone(), self.tx.clone(), self.hwnd.0 as usize);
         std::thread::spawn(move || {
-            let r = quota::fetch(&claude, fake.as_deref());
+            let r = quota::fetch(&claude, quota::proxy(&claude).as_deref(), fake.as_deref());
             let _ = tx.send(Msg::Quota(r));
             unsafe {
                 let _ = PostMessageW(Some(HWND(hwnd as _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
             }
         });
+    }
+
+    /// 在后台线程里跑 f，结果发回主线程
+    fn bg(&self, f: impl FnOnce() -> Msg + Send + 'static) {
+        let (tx, hwnd) = (self.tx.clone(), self.hwnd.0 as usize);
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+            unsafe {
+                let _ = PostMessageW(Some(HWND(hwnd as _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
+            }
+        });
+    }
+
+    /// 重读当前账号的邮箱和其他账号的列表（已有账号的额度留着），新出现的账号马上查额度
+    fn reload_accounts(&mut self) {
+        self.email = accounts::email(&self.global).unwrap_or_default();
+        let mut old = std::mem::take(&mut self.accounts);
+        for (dir, email) in accounts::load(&self.data.join("accounts")) {
+            if email == self.email {
+                continue;
+            }
+            match old.iter().position(|a| a.dir == dir) {
+                Some(i) => self.accounts.push(accounts::Account { email, ..old.swap_remove(i) }),
+                None => self.accounts.push(accounts::Account { dir, email, quota: Fetch::Err(String::new()), next_poll: 0, next_ping: 0, fetching: false, pinging: false }),
+            }
+        }
+        for i in 0..self.accounts.len() {
+            if self.accounts[i].next_poll == 0 {
+                self.fetch_acct(i);
+            }
+        }
+    }
+
+    fn fetch_acct(&mut self, i: usize) {
+        let (proxy, fake) = (quota::proxy(&self.claude), self.fake.clone());
+        let a = &mut self.accounts[i];
+        if std::mem::replace(&mut a.fetching, true) {
+            return;
+        }
+        let dir = a.dir.clone();
+        self.bg(move || Msg::Acct(dir.clone(), quota::fetch(&dir, proxy.as_deref(), fake.as_deref())));
+    }
+
+    /// 打卡；dir 为 None 是当前账号
+    fn ping(&self, dir: Option<PathBuf>) {
+        let (exe, proxy) = (accounts::claude_exe(&home()), quota::proxy(&self.claude));
+        // 当前账号用默认目录时不设 CLAUDE_CONFIG_DIR，不然 Claude Code 会在 ~/.claude 里另起一份全局配置
+        let d = dir.clone().or_else(|| (self.claude != home().join(".claude")).then(|| self.claude.clone()));
+        self.bg(move || Msg::Pinged(dir, accounts::ping(&exe, d.as_deref(), proxy.as_deref())));
+    }
+
+    /// 开着自动打卡时，5 小时窗口没在跑的账号各打一次卡
+    fn auto_ping(&mut self) {
+        let now = time::now();
+        if !self.cfg.ping {
+            return;
+        }
+        if !self.pinging && now >= self.ping_at && accounts::idle(&self.quota, now) {
+            self.pinging = true;
+            self.ping(None);
+        }
+        for i in 0..self.accounts.len() {
+            let a = &mut self.accounts[i];
+            if !a.pinging && now >= a.next_ping && accounts::idle(&a.quota, now) {
+                a.pinging = true;
+                let d = a.dir.clone();
+                self.ping(Some(d));
+            }
+        }
+    }
+
+    fn switch_to(&mut self, i: usize) {
+        // 打卡的 claude 进程可能正在刷新凭证，等它跑完再切
+        let busy = self.pinging || self.accounts.iter().any(|a| a.pinging);
+        if busy || accounts::switch(&self.claude, &self.global, &self.data.join("accounts"), &self.accounts[i].dir).is_err() {
+            unsafe { MessageBeep(MB_ICONWARNING).ok() };
+            return;
+        }
+        // 两个账号的额度先对调着显示，再各查一次
+        let (old_email, q) = (self.email.clone(), std::mem::replace(&mut self.accounts[i].quota, Fetch::Err(String::new())));
+        let old = std::mem::replace(&mut self.quota, q);
+        self.quota_at = if matches!(self.quota, Fetch::Ok(_)) { time::now() } else { 0 };
+        (self.stale, self.ping_at, self.samples_reset) = (false, 0, None);
+        self.samples.clear();
+        self.plan = quota::creds(&self.claude).map(|c| c.plan).unwrap_or_default();
+        self.reload_accounts();
+        if let Some(a) = self.accounts.iter_mut().find(|a| a.email == old_email) {
+            a.quota = old;
+        }
+        self.fetch_quota();
+        self.update_tray();
     }
 
     fn on_quota(&mut self, r: Fetch) {
@@ -401,6 +512,9 @@ impl App {
             }
             self.check_alerts(&ws, now);
         }
+        // 在 Claude Code 里 /login 换了账号也跟上
+        self.reload_accounts();
+        self.auto_ping();
         self.update_tray();
         self.invalidate();
     }
@@ -557,9 +671,18 @@ impl App {
         match id {
             Id::Opacity => return false,
             Id::Top => self.set_topmost(!self.cfg.topmost),
-            Id::Cache => {
-                self.cfg.cache_read = !self.cfg.cache_read;
+            Id::Ping => {
+                self.cfg.ping = !self.cfg.ping;
                 self.save_cfg();
+                self.auto_ping();
+            }
+            Id::AddAccount => {
+                let (exe, proxy) = (accounts::claude_exe(&home()), quota::proxy(&self.claude));
+                let dir = self.data.join("accounts").join(format!("new-{}", time::now()));
+                self.bg(move || {
+                    accounts::login(&exe, &dir, proxy.as_deref());
+                    Msg::Login(dir)
+                });
             }
             Id::Auto => sys::set_autostart(!sys::autostart()),
             Id::Alert(v) => {
@@ -591,7 +714,7 @@ impl App {
             }
         }
         self.invalidate();
-        matches!(id, Id::Refresh | Id::Layout | Id::Hide)
+        matches!(id, Id::AddAccount | Id::Refresh | Id::Layout | Id::Hide)
     }
 
     /// 改透明度（拖滑块时实时生效，松手再存盘）
@@ -632,6 +755,50 @@ impl App {
                     self.sync = s;
                     self.invalidate();
                 }
+                Msg::Acct(dir, q) => {
+                    if let Some(a) = self.accounts.iter_mut().find(|a| a.dir == dir) {
+                        a.fetching = false;
+                        a.next_poll = time::now() + if matches!(q, Fetch::Ok(_)) { POLL_SLOW } else { POLL_ERR };
+                        // 刷新失败时继续显示上一次的数
+                        if !matches!((&q, &a.quota), (Fetch::Err(_), Fetch::Ok(_))) {
+                            a.quota = q;
+                        }
+                        self.auto_ping();
+                        self.invalidate();
+                    }
+                }
+                Msg::Pinged(dir, ok) => {
+                    // 成功后等 10 分钟让额度接口反映出来，失败 15 分钟后再试
+                    let next = time::now() + if ok { 600 } else { 900 };
+                    match dir {
+                        None => {
+                            (self.pinging, self.ping_at) = (false, next);
+                            self.fetch_quota();
+                        }
+                        Some(d) => {
+                            if let Some(i) = self.accounts.iter().position(|a| a.dir == d) {
+                                (self.accounts[i].pinging, self.accounts[i].next_ping) = (false, next);
+                                self.fetch_acct(i);
+                            }
+                        }
+                    }
+                }
+                Msg::Login(dir) => {
+                    // 没登录成功、或登的是当前账号就删掉这个目录；登的是列表里已有的账号就换掉旧目录
+                    let e = dir.join(".credentials.json").is_file().then(|| accounts::email(&dir.join(".claude.json"))).flatten();
+                    match e {
+                        Some(e) if e != self.email => {
+                            for a in self.accounts.iter().filter(|a| a.email == e) {
+                                let _ = std::fs::remove_dir_all(&a.dir);
+                            }
+                        }
+                        _ => {
+                            let _ = std::fs::remove_dir_all(&dir);
+                        }
+                    }
+                    self.reload_accounts();
+                    self.invalidate();
+                }
             }
         }
     }
@@ -658,6 +825,11 @@ impl App {
         self.reload_sessions();
         if time::now() >= self.next_poll {
             self.fetch_quota();
+        }
+        for i in 0..self.accounts.len() {
+            if time::now() >= self.accounts[i].next_poll {
+                self.fetch_acct(i);
+            }
         }
         self.check_sync();
         self.save_days();
@@ -895,7 +1067,7 @@ fn dump(claude: &Path, fake: Option<&Path>, out: &Path) {
         s += &format!("session {:?} title={:?} desktop_title={:?} tool={:?}\n", x, info.title, titles.get(&x.id), info.tool);
     }
     s += &format!("plan {:?}\n", quota::creds(claude).map(|c| c.plan));
-    s += &format!("quota {:?}\n", quota::fetch(claude, fake));
+    s += &format!("quota {:?}\n", quota::fetch(claude, quota::proxy(claude).as_deref(), fake));
     let _ = std::fs::write(out, s);
 }
 
@@ -1021,6 +1193,11 @@ fn main() {
             scan_pending: false,
             sync: None,
             sync_mtime: None,
+            global: accounts::global_json(&claude, &home()),
+            email: String::new(),
+            accounts: Vec::new(),
+            pinging: false,
+            ping_at: 0,
         });
         APP = &mut *a;
         a.load_theme();
@@ -1044,6 +1221,7 @@ fn main() {
         let _ = std::fs::create_dir_all(claude.join("sessions"));
         sys::watch(claude.join("sessions"), false, hwnd, WM_APP_SESS);
         sys::watch(claude.join("projects"), true, hwnd, WM_APP_PROJ);
+        a.reload_accounts();
         a.fetch_quota();
         a.check_sync();
         // 15 秒一跳：确认会话进程还在、刷新倒计时、到点查额度、看同步状态、存用量历史
