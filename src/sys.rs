@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
-use windows::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
+use windows::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow, GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::*;
@@ -48,10 +48,16 @@ pub fn focus(pid: u32) -> bool {
 
 fn console_window(pid: u32) -> Option<HWND> {
     unsafe {
+        // AttachConsole 会把标准句柄换成那个控制台的，FreeConsole 后失效的句柄仍留在本进程；
+        // 不还原的话，之后起的子进程（SSH 设置窗口、账号登录窗口）继承它们会报“句柄无效”
+        let std = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].map(|n| (n, GetStdHandle(n).unwrap_or_default()));
         let _ = FreeConsole();
         AttachConsole(pid).ok()?;
         let h = GetConsoleWindow();
         let _ = FreeConsole();
+        for (n, s) in std {
+            let _ = SetStdHandle(n, s);
+        }
         if h.is_invalid() {
             return None;
         }
