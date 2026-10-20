@@ -63,6 +63,14 @@ class WakerTests(unittest.TestCase):
         self.assertIsNone(state["resets_at"])
         self.assertNotIn("sk-ant", json.dumps(waker.status(self.now)))
 
+    def test_rate_limited_usage_still_wakes(self):
+        output = json.dumps({"type": "result", "subtype": "success", "is_error": False})
+        with patch.object(waker, "egress", return_value="198.51.100.1"), \
+             patch.object(waker, "oauth_request", return_value=("429", "")), \
+             patch.object(waker, "command", return_value=(0, output)) as cli:
+            self.assertEqual(waker.wake(self.now), "sent")
+            self.assertEqual(cli.call_count, 1)
+
     def test_failure_retries_without_false_success(self):
         with patch.object(waker, "egress", return_value="198.51.100.1"), \
              patch.object(waker, "usage", return_value=0), \

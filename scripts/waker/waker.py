@@ -163,9 +163,10 @@ def oauth_request(token, endpoint):
 
 
 def usage(token):
-    # setup-token may lack user:profile: a 403 means "cannot inspect", NOT idle.
+    # setup-token may lack user:profile (403) and the endpoint rate-limits (429): both mean
+    # "cannot inspect", NOT idle. wake() still sends; a message never moves an active window's reset.
     status, body = oauth_request(token, "usage")
-    if status == "403":
+    if status in ("403", "429"):
         return None
     if status != "200":
         raise RuntimeError("usage_http_" + status)
@@ -271,7 +272,7 @@ def record(result, now, token, **fields):
 def failure(error):
     reason = str(error)
     if reason not in ("timeout", "proxy_unavailable", "usage_network_error",
-                      "usage_http_401", "usage_http_429", "usage_http_500", "usage_http_503"):
+                      "usage_http_401", "usage_http_500", "usage_http_503"):
         reason = "request_failed"
     return reason
 
