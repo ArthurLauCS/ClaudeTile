@@ -12,6 +12,7 @@ mod icon;
 mod json;
 mod menu;
 mod quota;
+mod reset;
 mod sessions;
 mod sync;
 mod sys;
@@ -77,6 +78,7 @@ enum Msg {
     Pinged(Option<PathBuf>, bool),
     /// 添加账号的命令行窗口关了
     Login(PathBuf),
+    Predictions(reset::Feeds),
 }
 
 pub struct App {
@@ -105,6 +107,9 @@ pub struct App {
     pub stale: bool,
     next_poll: i64,
     fetching: bool,
+    pub predictions: Option<reset::Feeds>,
+    predictions_fetching: bool,
+    predictions_next_poll: i64,
     pub plan: String,
     /// 5 小时额度的 (时间, 百分比) 样本，估算用完时间；重置时间变了就清空
     pub samples: Vec<(i64, f64)>,
@@ -357,6 +362,10 @@ impl App {
             Hit::Quota => self.fetch_quota(),
             Hit::Heatmap => { self.menu_action(menu::Id::Heatmap); }
             Hit::Projects => { self.menu_action(menu::Id::Projects); }
+            Hit::Prediction(i) => unsafe {
+                let url = wide(reset::EMBEDS[i]);
+                let _ = ShellExecuteW(Some(self.hwnd), w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL);
+            },
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
             Hit::Split(_) => {}
         }
@@ -711,6 +720,7 @@ impl App {
             }
             Id::Refresh => {
                 self.fetch_quota();
+                self.fetch_predictions();
                 for i in 0..self.accounts.len() { self.fetch_acct(i); }
                 self.request_scan();
                 self.reload_sessions();
@@ -754,6 +764,12 @@ impl App {
     fn drain(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
+                Msg::Predictions(feeds) => {
+                    self.predictions_fetching = false;
+                    self.predictions_next_poll = time::now() + 300;
+                    self.predictions = Some(feeds);
+                    self.invalidate();
+                }
                 Msg::Scan(days, info) => {
                     usage::merge_max(&mut self.days, &days);
                     self.days_dirty = true;
@@ -826,6 +842,12 @@ impl App {
         }
     }
 
+    fn fetch_predictions(&mut self) {
+        if std::mem::replace(&mut self.predictions_fetching, true) { return; }
+        let proxy = quota::proxy(&self.claude);
+        self.bg(move || Msg::Predictions(reset::fetch(proxy.as_deref())));
+    }
+
     /// sync.log 变了（同步跑完）或到了计划任务的下次运行时间，就在后台重读同步状态
     fn check_sync(&mut self) {
         let m = std::fs::metadata(self.claude.join("sync.log")).and_then(|m| m.modified()).ok();
@@ -844,6 +866,9 @@ impl App {
     }
 
     fn tick(&mut self) {
+        if time::now() >= self.predictions_next_poll {
+            self.fetch_predictions();
+        }
         toast::pump(self);
         self.reload_sessions();
         if time::now() >= self.next_poll {
@@ -1191,6 +1216,9 @@ fn main() {
             stale: false,
             next_poll: 0,
             fetching: false,
+            predictions: None,
+            predictions_fetching: false,
+            predictions_next_poll: 0,
             plan: String::new(),
             samples: Vec::new(),
             samples_reset: None,
@@ -1247,6 +1275,7 @@ fn main() {
         sys::watch(claude.join("projects"), true, hwnd, WM_APP_PROJ);
         a.reload_accounts();
         a.fetch_quota();
+        a.fetch_predictions();
         a.check_sync();
         // 15 秒一跳：确认会话进程还在、刷新倒计时、到点查额度、看同步状态、存用量历史
         SetTimer(Some(hwnd), T_TICK, 15_000, None);

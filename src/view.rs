@@ -1,5 +1,5 @@
 //! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放。
-//! 自上而下：同步、账号额度、会话、可关闭的热力图和今日项目。
+//! 自上而下：同步、账号额度、会话、可关闭的热力图和今日项目、两行重置信息。
 
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -40,6 +40,7 @@ pub enum Hit {
     Quota,
     Heatmap,
     Projects,
+    Prediction(usize),
     /// 右上角的置顶按钮
     Pin,
     /// 第 i 个框下方的拖动条
@@ -338,7 +339,7 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
     y += SPLIT;
 
     // 三个框：额度、会话、Token。各自裁剪、可滚动，框下方的空隙可以拖动改框高
-    let fixed = y + 2.0 * SPLIT + BOTTOM;
+    let fixed = y + 3.0 * SPLIT + BOTTOM + 36.0;
     let mut natural = a.nat;
     if !a.cfg.heatmap && !a.cfg.projects { natural[2] = 0.0; }
     let bh = box_heights(a.cfg.heights, natural, fixed, max_h);
@@ -380,8 +381,8 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         boxes[i] = (top, hgt);
         y = top + hgt;
         // 框下方的拖动条：悬停或拖动时显出一道短横线
-        let gap = if i < 2 { SPLIT } else { BOTTOM };
-        if i < 2 { p.fill(rect(l, y + gap / 2.0, r, y + gap / 2.0 + 1.0), 0.0, th.faint); }
+        let gap = SPLIT;
+        p.fill(rect(l, y + gap / 2.0, r, y + gap / 2.0 + 1.0), 0.0, th.faint);
         let zone = rect(0.0, y, w, y + gap);
         if a.hover == Some(Hit::Split(i)) || a.dragging == Some(i) {
             let c = w / 2.0;
@@ -390,7 +391,20 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         hits.push((zone, Hit::Split(i)));
         y += gap;
     }
-    Frame { h: y, hits, nat, boxes }
+    for (i, name) in ["Codex", "Claude"].iter().enumerate() {
+        let label = match a.predictions.as_ref().map(|feeds| &feeds[i]) {
+            Some(Ok(prediction)) if now - prediction.polled <= 3 * 3600 => prediction.label(),
+            Some(Ok(_)) => tr("信息较旧", "Stale"),
+            Some(Err(_)) => tr("未知", "Unknown"),
+            None => tr("查询中", "Loading"),
+        };
+        let row = rect(l, y, r, y + 18.0);
+        p.text(&format!("{name}"), row, &f.f11, th.muted, Align::L);
+        p.text(label, row, &f.f11, th.text, Align::R);
+        hits.push((row, Hit::Prediction(i)));
+        y += 18.0;
+    }
+    Frame { h: y + BOTTOM, hits, nat, boxes }
 }
 
 
