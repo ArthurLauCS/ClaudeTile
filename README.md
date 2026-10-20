@@ -25,13 +25,17 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 
 ## What it shows
 
-**Usage limits.** The 5-hour and weekly limits with a progress bar and a reset countdown, plus per-model weekly limits when your plan has them. From the last 30 minutes of usage it estimates when the 5-hour limit will run out ("At this pace, runs out in 1h 20m").
+**Account details.** The main panel follows Sync / Wake-up → Accounts → Sessions → Token heatmap / Today's projects → Reset signals, separated by thin rules. Each account shows its email, plan, 5-hour and weekly usage percentages, bars, and reset times. Hovering a card highlights it; the current account has a stronger highlight. Unavailable fields stay explicitly unavailable rather than appearing as zero.
 
-**Accounts.** Use several Claude subscriptions: **Add account…** in the menu opens a command window that runs `claude auth login` for the new account. With two or more accounts the usage box lists each one with its 5-hour bar and weekly percentage; click an account to switch Claude Code to it (new sessions use it; restart running ones). Turn on **Auto-start idle 5h windows** and the tile sends each account a tiny Haiku message (about 3k tokens) whenever its 5-hour window is not running, so the window starts counting while you are away.
+**Accounts.** **Add account…** runs `claude auth login` with a separate account directory. Each account has its own full quota display; clicking another account switches the local Claude Code login for new sessions. VPS token identity and quota are queried on the server; the VPS card appears only when usage and reset times are available. Failed or unauthorized usage queries hide the card; missing profile scope never substitutes a local identity. Local account switching does not replace the VPS token.
+
+**VPS wake-up.** After pairing a VPS, the menu offers **VPS wake-up / Set token…**. The token stays on the VPS, which sends a short message daily at 07:00 Beijing time, even when Windows is off. The tile shows whether the schedule is on, the next attempt, the last 4 characters of the stored token and the last result, and disables local idle wake-ups. The target is a reset around 12:00; existing windows and server limits can prevent that. See [configuration, pause and deployment](docs/vps-waker.md).
+
+**Reset signals.** Two compact footer rows show Codex / Claude status from [codexreset.vercel.app](https://codexreset.vercel.app/en), refreshed every five minutes. The tile uses the source status directly; failures show Unknown and source data older than three hours shows Stale. Click a row to open its embed page. The public request sends no account or token. These social-media signals do not confirm a personal quota reset.
 
 **Sessions.** Every running Claude Code session, from terminals and from the Claude desktop app: title, project, the tool it is running right now, and how long it has been in its current state. Sessions that need you (a permission prompt, a question) are listed first. Click a session to jump to its window.
 
-**Token heatmap.** One cell per day, one column per week, like GitHub contributions. Switch to **Week** for a bar per week. Click a day or a week to see that period by project and by model. The number of weeks follows the tile width. Cache reads are not counted by default, since they are dozens of times larger than everything else; turn them on with the **Cache** switch above the heatmap.
+**Token heatmap and today's projects.** Switch between daily cells and weekly bars; hover or select a period to see its total. A separate list shows today's project usage. Each section has a close button and can be restored independently from the right-click menu; preferences persist. Cache reads are excluded unless enabled with the Cache switch. Daily statistics retain the Windows local date; quota reset, sync and wake-up times use the time zone chosen in the menu (Beijing by default, or local / UTC).
 
 **Tray icon.** Shows the 5-hour usage percentage. Its color shows the state:
 
@@ -54,7 +58,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 - **Width:** drag the left or right edge. The heatmap shows more weeks when wider.
 - **Section heights:** drag the gap below the limits, sessions or token section. Each section scrolls with the mouse wheel when its content is taller. The sessions section shows 5 rows by default.
 - **Always on top:** the pin in the upper-right corner. When unpinned, the tile behaves like a normal window: clicking or dragging it brings it above other windows, and clicking another window covers it again.
-- **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, auto-start idle 5h windows, start with Windows, usage alert level, language, add account, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
+- **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, auto-start idle 5h windows, start with Windows, usage alert level, language, time zone, add account, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
 - **Show / hide:** left-click the tray icon.
 
 <p align="center">
@@ -63,7 +67,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 
 ## Where the data comes from
 
-ClaudeTile only reads what Claude Code already keeps on your computer, and never changes it.
+Session and token statistics only read Claude Code's local data. Explicit account switching updates credentials; enabling wake-ups sends model requests.
 
 | What | Source |
 |---|---|
@@ -73,7 +77,7 @@ ClaudeTile only reads what Claude Code already keeps on your computer, and never
 | Usage limits | `https://api.anthropic.com/api/oauth/usage`, using the sign-in token Claude Code saved in `%USERPROFILE%\.claude\.credentials.json` |
 | Other accounts | `%APPDATA%\ClaudeTile\accounts\<account>`, each the `CLAUDE_CONFIG_DIR` the account signed in with. Switching copies the current account's `.credentials.json` and the `oauthAccount` entry of `%USERPROFILE%\.claude.json` there and the chosen account's back |
 
-- This is the only network request ClaudeTile makes, about every 2 minutes. There is no telemetry. It uses the proxy from your environment variables or from `env` in `~/.claude/settings.json`, the same one Claude Code uses.
+- Usage is fetched about every 5 minutes, with no telemetry. It uses the proxy from your environment variables or from `env` in `~/.claude/settings.json`, the same one Claude Code uses. When a VPS is linked, the tile also reads its status over SSH every minute; the server uses its own fixed ISP proxy for wake-ups.
 - The usage endpoint is not a public API and may change. If it does, the tile and a notification tell you that ClaudeTile needs an update; sessions and token statistics keep working.
 - ClaudeTile never refreshes the sign-in token itself. When it expires, open Claude Code once and it refreshes.
 - Claude Code deletes transcripts older than 30 days by default, so ClaudeTile keeps its own daily totals. The heatmap keeps your history beyond 30 days.

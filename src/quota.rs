@@ -68,6 +68,10 @@ pub fn plan_name(sub: &str, tier: &str) -> String {
 
 pub fn parse(s: &str) -> Option<Vec<Window>> {
     let j = Json::parse(s)?;
+    parse_value(&j)
+}
+
+pub fn parse_value(j: &Json) -> Option<Vec<Window>> {
     let resets = |w: &Json| w.get("resets_at").str().and_then(time::parse_iso);
     let mut v = Vec::new();
     // limits 是新格式，带按模型计的周额度；没有时退回 five_hour / seven_day
@@ -142,6 +146,11 @@ impl Drop for H {
 }
 
 fn get(token: &str, proxy: Option<&str>) -> Result<(u32, String)> {
+    http_get("api.anthropic.com", "/api/oauth/usage", &format!("Authorization: Bearer {token}\r\nanthropic-beta: oauth-2025-04-20\r\nAccept: application/json\r\n"), proxy)
+}
+
+/// Shared HTTPS transport. Public feeds pass only Accept, never account credentials.
+pub fn http_get(host: &str, path: &str, headers: &str, proxy: Option<&str>) -> Result<(u32, String)> {
     unsafe {
         // WinHTTP 要 host:port，不带协议和末尾斜杠
         let p = proxy.map(|p| wide(p.split("://").last().unwrap_or(p).trim_end_matches('/')));
@@ -154,15 +163,17 @@ fn get(token: &str, proxy: Option<&str>) -> Result<(u32, String)> {
             return Err(Error::from_thread());
         }
         WinHttpSetTimeouts(s.0, 10_000, 10_000, 15_000, 15_000)?;
-        let c = H(WinHttpConnect(s.0, w!("api.anthropic.com"), 443, 0));
+        let host = wide(host);
+        let path = wide(path);
+        let c = H(WinHttpConnect(s.0, PCWSTR(host.as_ptr()), 443, 0));
         if c.0.is_null() {
             return Err(Error::from_thread());
         }
-        let r = H(WinHttpOpenRequest(c.0, w!("GET"), w!("/api/oauth/usage"), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE));
+        let r = H(WinHttpOpenRequest(c.0, w!("GET"), PCWSTR(path.as_ptr()), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE));
         if r.0.is_null() {
             return Err(Error::from_thread());
         }
-        let headers: Vec<u16> = format!("Authorization: Bearer {token}\r\nanthropic-beta: oauth-2025-04-20\r\nAccept: application/json\r\n").encode_utf16().collect();
+        let headers: Vec<u16> = headers.encode_utf16().collect();
         WinHttpSendRequest(r.0, Some(&headers), None, 0, 0, 0)?;
         WinHttpReceiveResponse(r.0, std::ptr::null_mut())?;
         let (mut code, mut len) = (0u32, 4u32);
@@ -174,6 +185,9 @@ fn get(token: &str, proxy: Option<&str>) -> Result<(u32, String)> {
             WinHttpReadData(r.0, buf.as_mut_ptr() as _, buf.len() as u32, &mut n)?;
             if n == 0 {
                 break;
+            }
+            if body.len() + n as usize > 1024 * 1024 {
+                return Err(Error::new(windows::Win32::Foundation::E_FAIL, "Response too large"));
             }
             body.extend_from_slice(&buf[..n as usize]);
         }

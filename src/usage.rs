@@ -237,19 +237,6 @@ pub fn breakdown(days: &Days, from: i32, to: i32, cache_read: bool) -> (u64, Vec
     (sum, sorted(proj), sorted(model))
 }
 
-/// "claude-opus-5-5" → "Opus 5.5"；认不出的原样返回
-pub fn model_name(id: &str) -> String {
-    let parts: Vec<&str> = id.trim_start_matches("claude-").split('-').collect();
-    let Some((fam, rest)) = parts.split_first() else { return id.to_string() };
-    let ver: Vec<&str> = rest.iter().take_while(|p| p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit())).copied().collect();
-    if fam.is_empty() || ver.is_empty() || !fam.chars().all(|c| c.is_ascii_alphabetic()) {
-        return id.to_string();
-    }
-    let mut f = fam.to_string();
-    f[..1].make_ascii_uppercase();
-    format!("{f} {}", ver.join("."))
-}
-
 /// 1234 → "1.2K"，12345678 → "12.3M"
 pub fn fmt_tokens(n: u64) -> String {
     let f = n as f64;
@@ -308,10 +295,6 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(model_name("claude-opus-5-5"), "Opus 5.5");
-        assert_eq!(model_name("claude-haiku-4-5-20251001"), "Haiku 4.5");
-        assert_eq!(model_name("claude-fable-5-1"), "Fable 5.1");
-        assert_eq!(model_name("gpt-x"), "gpt-x");
         assert_eq!(fmt_tokens(999), "999");
         assert_eq!(fmt_tokens(1234), "1.2K");
         assert_eq!(fmt_tokens(12_345_678), "12.3M");

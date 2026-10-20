@@ -1,0 +1,17 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    { "listen": "127.0.0.1", "port": 17898, "protocol": "http", "settings": {} }
+  ],
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          { "address": "YOUR_ISP_HOST", "port": 1080,
+            "users": [ { "user": "YOUR_ISP_USER", "pass": "YOUR_ISP_PASSWORD" } ] }
+        ]
+      }
+    }
+  ]
+}

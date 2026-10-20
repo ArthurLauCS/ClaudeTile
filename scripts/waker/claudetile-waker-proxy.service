@@ -1,0 +1,18 @@
+[Unit]
+Description=ClaudeTile dedicated ISP proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=claudetile-waker
+Group=claudetile-waker
+ExecStart=/usr/local/bin/xray run -config /etc/claudetile-waker/proxy.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 //! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放。
-//! 自上而下：标题行、~/.claude 同步状态（有 sync.log 时）、额度、会话、Token 热力图、选中日 / 周的分项。高度随内容变，宽度可拖，热力图的周数跟着宽度走。
+//! 自上而下：同步/唤醒、账号额度、会话、可关闭的热力图和今日项目、两行重置信息。
 
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -11,7 +11,7 @@ use crate::config::{en, tr};
 use crate::quota::{self, Fetch, Kind};
 use crate::sessions::State;
 use crate::usage::{self, fmt_tokens};
-use crate::{App, accounts, sync, time};
+use crate::{App, time};
 
 pub const PAD: f32 = 16.0;
 const GAP: f32 = 14.0;
@@ -23,6 +23,8 @@ pub const MIN_W: f32 = 300.0;
 const SPLIT: f32 = 16.0;
 const BOTTOM: f32 = 12.0;
 pub const MIN_BOX: f32 = 40.0;
+/// 账号卡之间的间距（含高亮底色上下各多出的 4）
+const CARD_GAP: f32 = 12.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -36,6 +38,12 @@ pub enum Hit {
     /// 账号列表里第 i 个其他账号，点了切过去
     Account(usize),
     Quota,
+    /// VPS Token 的账号卡，点了和 Quota 一样刷新
+    Remote,
+    Waker,
+    Heatmap,
+    Projects,
+    Prediction(usize),
     /// 右上角的置顶按钮
     Pin,
     /// 第 i 个框下方的拖动条
@@ -297,7 +305,7 @@ pub fn box_heights(user: [f32; 3], nat: [f32; 3], fixed: f32, max_h: f32) -> [f3
         b[i] = b[i].max(MIN_BOX.min(nat[i]));
     }
     let mut over = fixed + b.iter().sum::<f32>() - max_h;
-    for i in [1, 2] {
+    for i in [1, 2, 0] {
         if over > 0.0 {
             let cut = over.min((b[i] - MIN_BOX.min(nat[i])).max(0.0));
             b[i] -= cut;
@@ -319,45 +327,29 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         p.fill(rect(0.0, 0.0, w, h), 0.0, th.tint);
     }
 
-    // 标题行：名字、套餐、更新状态、右上角的置顶按钮
-    let mut y = 12.0;
-    let tw = p.text("Claude", rect(l, y, r, y + 24.0), &f.f14b, th.text, Align::L);
-    if !a.plan.is_empty() {
-        p.text(&a.plan, rect(l + tw + 8.0, y + 1.0, r, y + 24.0), &f.f11, th.muted, Align::L);
-    }
+
+    let mut y = 10.0;
+    p.text("Claude", rect(l, y, r, y + 24.0), &f.f14b, th.text, Align::L);
     let pin = rect(r - 24.0, y, r + 4.0, y + 24.0);
-    if a.hover == Some(Hit::Pin) {
-        p.fill(pin, 5.0, th.hover);
-    }
-    // Segoe Fluent Icons：E718 图钉，E840 按下的图钉
-    let (glyph, gc) = if a.cfg.topmost { ("\u{E840}", th.accent) } else { ("\u{E718}", th.muted) };
-    p.text(glyph, pin, &f.icon, gc, Align::C);
+    if a.hover == Some(Hit::Pin) { p.fill(pin, 5.0, th.hover); }
+    p.text(if a.cfg.topmost { "\u{E840}" } else { "\u{E718}" }, pin, &f.icon, if a.cfg.topmost { th.accent } else { th.muted }, Align::C);
     hits.push((pin, Hit::Pin));
-    let status = match &a.quota {
-        _ if a.quota_at == 0 => tr("正在读取额度…", "Loading usage…").to_string(),
-        Fetch::Ok(_) => {
-            let ago = now - a.quota_at;
-            let s = if ago < 60 { tr("刚刚更新", "Updated just now").to_string() } else if en() { format!("Updated {} ago", fmt_dur(ago)) } else { format!("{}前更新", fmt_dur(ago)) };
-            if a.stale { format!("{s} · {}", tr("刷新失败", "refresh failed")) } else { s }
-        }
-        Fetch::Expired => tr("登录已过期", "Login expired").to_string(),
-        Fetch::NoLogin => tr("未登录", "Not logged in").to_string(),
-        Fetch::Changed(_) => tr("需要更新 ClaudeTile", "ClaudeTile needs an update").to_string(),
-        Fetch::Err(e) => format!("{}{e}", tr("额度读取失败：", "Usage error: ")),
-    };
-    let stale = a.stale || !matches!(a.quota, Fetch::Ok(_)) && a.quota_at != 0;
-    p.text(&status, rect(l + 120.0, y + 1.0, r - 30.0, y + 24.0), &f.f11, if stale { th.warn } else { th.muted }, Align::R);
-    y += 24.0 + GAP;
-    if let Some(s) = &a.sync {
-        y = sync_rows(&p, a, s, w, y);
-    }
+    let zone = match a.cfg.tz { 1 => tr("本机时间", "Local time"), 2 => "UTC", _ => tr("北京时间", "Beijing time") };
+    p.text(zone, rect(l + 80.0, y, r - 32.0, y + 24.0), &f.f11, th.muted, Align::R);
+    y += 30.0;
+    y = service_rows(&p, a, w, y, &mut hits);
+    p.fill(rect(l, y + 7.0, r, y + 8.0), 0.0, th.faint);
+    y += SPLIT;
 
     // 三个框：额度、会话、Token。各自裁剪、可滚动，框下方的空隙可以拖动改框高
-    let fixed = y + 2.0 * SPLIT + BOTTOM;
-    let bh = box_heights(a.cfg.heights, a.nat, fixed, max_h);
+    let fixed = y + 3.0 * SPLIT + BOTTOM + 36.0;
+    let mut natural = a.nat;
+    if !a.cfg.heatmap && !a.cfg.projects { natural[2] = 0.0; }
+    let bh = box_heights(a.cfg.heights, natural, fixed, max_h);
     let mut nat = [0.0; 3];
     let mut boxes = [(0.0, 0.0); 3];
     for i in 0..3 {
+        if i == 2 && !a.cfg.heatmap && !a.cfg.projects { continue; }
         let (top, hgt) = (y, bh[i]);
         let scroll = a.scroll[i].min((a.nat[i] - hgt).max(0.0)).max(0.0);
         // 会话框的标题固定在框顶，下面的列表滚动
@@ -369,7 +361,7 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
             p.dc.SetTransform(&Matrix3x2::translation(0.0, ctop - scroll));
             nat[i] = head
                 + match i {
-                    0 => quota_box(&p, a, w, now, &mut local),
+                    0 => account_rows(&p, a, w, &mut local),
                     1 => session_box(&p, a, w, now, &mut local),
                     _ => token_box(&p, a, w, &mut local),
                 };
@@ -392,7 +384,8 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         boxes[i] = (top, hgt);
         y = top + hgt;
         // 框下方的拖动条：悬停或拖动时显出一道短横线
-        let gap = if i < 2 { SPLIT } else { BOTTOM };
+        let gap = SPLIT;
+        p.fill(rect(l, y + gap / 2.0, r, y + gap / 2.0 + 1.0), 0.0, th.faint);
         let zone = rect(0.0, y, w, y + gap);
         if a.hover == Some(Hit::Split(i)) || a.dragging == Some(i) {
             let c = w / 2.0;
@@ -401,141 +394,118 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         hits.push((zone, Hit::Split(i)));
         y += gap;
     }
-    Frame { h: y, hits, nat, boxes }
-}
-
-/// 本地时间 07:41，不是今天时带上日期 10-18 07:41
-fn fmt_clock(t: i64) -> String {
-    let (d, h, m) = time::local(t);
-    let (_, mo, dd) = time::civil(d);
-    if d == time::today() { format!("{h:02}:{m:02}") } else { format!("{mo:02}-{dd:02} {h:02}:{m:02}") }
-}
-
-/// ~/.claude 同步：上次同步的时间和结果、失败原因或和远端差几个提交、下次同步时间。返回下一行的 y
-fn sync_rows(p: &P, a: &App, s: &sync::Sync, w: f32, y: f32) -> f32 {
-    let (th, f) = (&a.theme, &a.fonts);
-    let (l, r) = (PAD, w - PAD);
-    p.text(tr("同步", "Sync"), rect(l, y, r, y + 16.0), &f.f12, th.text, Align::L);
-    let (word, c) = if s.ok { (tr("成功", "OK"), th.ok) } else { (tr("失败", "Failed"), th.warn) };
-    let ww = p.text(word, rect(l, y, r, y + 16.0), &f.f12b, c, Align::R);
-    p.text(&format!("{} {}", tr("上次", "Last"), fmt_clock(s.at)), rect(l, y, r - ww - 8.0, y + 16.0), &f.f11, th.muted, Align::R);
-    let y = y + 20.0;
-    let next = match s.next {
-        Some(t) => format!("{} {}", tr("下次", "Next"), fmt_clock(t)),
-        None => tr("下次：开 Claude 时", "Next: when Claude starts").into(),
-    };
-    let nw = p.text(&next, rect(l, y, r, y + 16.0), &f.f11, th.muted, Align::R);
-    let (msg, c) = match s.diverge {
-        _ if !s.ok => (s.err.clone(), th.warn),
-        Some((0, 0)) => (tr("和远端一致", "Up to date").into(), th.muted),
-        Some((n, 0)) => (if en() { format!("{n} commits not pushed") } else { format!("{n} 个提交未推送") }, th.warn),
-        Some((_, n)) => (if en() { format!("{n} commits behind remote") } else { format!("落后远端 {n} 个提交") }, th.warn),
-        None => (String::new(), th.muted),
-    };
-    p.text(&msg, rect(l, y, r - nw - 12.0, y + 16.0), &f.f11, c, Align::L);
-    y + 16.0 + GAP
-}
-
-fn quota_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
-    let (th, f) = (&a.theme, &a.fonts);
-    let (l, r) = (PAD, w - PAD);
-    let mut y = 0.0;
-    let note = |msg: &str, y: &mut f32| {
-        p.text(msg, rect(l, *y, r, *y + 18.0), &f.f12, th.muted, Align::L);
-        *y += 18.0;
-    };
-    match &a.quota {
-        Fetch::Ok(ws) => {
-            for wd in ws {
-                let pct = wd.pct.clamp(0.0, 100.0);
-                p.text(&quota_label(&wd.kind), rect(l, y, r, y + 16.0), &f.f12, th.text, Align::L);
-                let reset = wd.resets.map(|t| if en() { format!("resets in {}", fmt_dur(t - now)) } else { format!("{}后重置", fmt_dur(t - now)) }).unwrap_or_default();
-                let rw = p.text(&reset, rect(l, y, r, y + 16.0), &f.f11, th.muted, Align::R);
-                p.text(&format!("{pct:.0}%"), rect(l, y, r - rw - 8.0, y + 16.0), &f.f12b, th.level(pct), Align::R);
-                y += 20.0;
-                p.fill(rect(l, y, r, y + 6.0), 3.0, th.track);
-                if pct > 0.0 {
-                    p.fill(rect(l, y, l + ((r - l) * pct as f32 / 100.0).max(6.0), y + 6.0), 3.0, th.level(pct));
-                }
-                y += 6.0;
-                if wd.kind == Kind::Session {
-                    if let Some(t) = quota::eta(&a.samples, now).filter(|t| wd.resets.is_none_or(|rs| *t < rs)) {
-                        y += 4.0;
-                        let s = if en() { format!("At this pace, runs out in {}", fmt_dur(t - now)) } else { format!("按当前速度，约 {} 后用完", fmt_dur(t - now)) };
-                        p.text(&s, rect(l, y, r, y + 16.0), &f.f11, th.warn, Align::L);
-                        y += 16.0;
-                    }
-                }
-                y += 10.0;
-            }
-            y -= 10.0;
-        }
-        Fetch::Expired => note(tr("登录已过期：打开一次 Claude Code 即可自动刷新", "Login expired: open Claude Code once to refresh"), &mut y),
-        Fetch::NoLogin => note(tr("没有找到 Claude 登录信息（用 API Key 时没有额度）", "No Claude login found (API keys have no plan limits)"), &mut y),
-        Fetch::Changed(_) => {
-            p.text(tr("额度接口有变化，当前版本读不了额度", "The usage API has changed and this version can't read it"), rect(l, y, r, y + 18.0), &f.f12, th.warn, Align::L);
-            y += 18.0;
-            note(tr("请更新 ClaudeTile（会话和 Token 统计不受影响）", "Please update ClaudeTile (sessions and tokens still work)"), &mut y);
-        }
-        Fetch::Err(_) => note(tr("额度暂时读不到，稍后自动重试（点这里立即重试）", "Usage unavailable, retrying soon (click to retry)"), &mut y),
+    for (i, name) in ["Codex", "Claude"].iter().enumerate() {
+        let label = match a.predictions.as_ref().map(|feeds| &feeds[i]) {
+            Some(Ok(prediction)) if now - prediction.polled <= 3 * 3600 => prediction.label(),
+            Some(Ok(_)) => tr("信息较旧", "Stale"),
+            Some(Err(_)) => tr("未知", "Unknown"),
+            None => tr("查询中", "Loading"),
+        };
+        let row = rect(l, y, r, y + 18.0);
+        p.text(&format!("{name}"), row, &f.f11, th.muted, Align::L);
+        p.text(label, row, &f.f11, th.text, Align::R);
+        hits.push((row, Hit::Prediction(i)));
+        y += 18.0;
     }
-    if !a.accounts.is_empty() {
-        y = account_rows(p, a, w, y + 14.0, hits);
+    Frame { h: y + BOTTOM, hits, nat, boxes }
+}
+
+
+/// Compact service status; the wake-up row opens the existing token console.
+fn service_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let (th, f, l, r) = (&a.theme, &a.fonts, PAD, w - PAD);
+    let sync = a.sync.as_ref().map(|s| {
+        let state = if s.ok { tr("已同步", "Synced") } else { tr("失败", "Failed") };
+        format!("{state} · {}", time::stamp(s.at, a.cfg.tz))
+    }).unwrap_or_else(|| tr("未配置", "Not configured").into());
+    p.text(tr("同步", "Sync"), rect(l, y, l + 60.0, y + 18.0), &f.f12, th.muted, Align::L);
+    p.text(&sync, rect(l + 60.0, y, r, y + 18.0), &f.f11, if a.sync.as_ref().is_some_and(|s| !s.ok) { th.warn } else { th.text }, Align::R);
+    y += 22.0;
+    let wake = match &a.waker {
+        Some(Ok(s)) => s.summary(a.cfg.tz),
+        Some(Err(_)) => tr("VPS 暂不可达", "VPS unreachable").into(),
+        None if crate::waker::linked(&a.data) => tr("查询中", "Loading").into(),
+        None => if a.cfg.ping { tr("本机自动打卡", "Local idle wake-up") } else { tr("未启用", "Off") }.into(),
+    };
+    let row = rect(l, y, r, y + 18.0);
+    p.text(tr("唤醒", "Wake-up"), row, &f.f12, th.muted, Align::L);
+    p.text(&wake, rect(l + 60.0, y, r, y + 18.0), &f.f11, th.text, Align::R);
+    if crate::waker::linked(&a.data) { hits.push((row, Hit::Waker)); }
+    y += 20.0;
+    if let Some(Ok(status)) = &a.waker {
+        p.text(&status.detail(a.cfg.tz), rect(l + 60.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+        y += 18.0;
     }
-    hits.push((rect(0.0, -4.0, w, y + 4.0), Hit::Quota));
     y
 }
 
-/// 多账号：当前账号在最上面，每个账号一行，下面一条 5 小时额度条；点其他账号切过去。返回下一行的 y
-fn account_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
-    let (th, f) = (&a.theme, &a.fonts);
-    let (l, r) = (PAD, w - PAD);
-    p.text(tr("账号", "Accounts"), rect(l, y, r, y + 18.0), &f.f12b, th.text, Align::L);
-    p.text(tr("点击切换", "Click to switch"), rect(l, y + 1.0, r, y + 18.0), &f.f11, th.muted, Align::R);
-    y += 22.0;
-    let me = if a.email.is_empty() { tr("当前账号", "Current account") } else { a.email.as_str() };
-    let rows = std::iter::once((None, me, &a.quota, a.pinging, a.ping_at)).chain(a.accounts.iter().enumerate().map(|(i, x)| (Some(i), x.email.as_str(), &x.quota, x.pinging, x.next_ping)));
-    for (i, email, q, pinging, after) in rows {
-        if let Some(i) = i {
-            let row = rect(l - 8.0, y - 4.0, r + 8.0, y + 46.0);
-            if a.hover == Some(Hit::Account(i)) {
-                p.fill(row, 6.0, th.hover);
-            }
-            hits.push((row, Hit::Account(i)));
-        }
-        let (txt, pct) = match (accounts::pcts(q), q) {
-            (Some((s, wk)), _) => (if en() { format!("5h {s:.0}% · wk {wk:.0}%") } else { format!("5h {s:.0}% · 周 {wk:.0}%") }, s),
-            (_, Fetch::Expired) => (tr("登录已过期", "Login expired").into(), 0.0),
-            (_, Fetch::Err(e)) if e.is_empty() => (tr("读取中…", "Loading…").into(), 0.0),
-            _ => (tr("读不到额度", "Usage unavailable").into(), 0.0),
-        };
-        p.dot(l + 4.0, y + 9.0, 4.0, if i.is_none() { th.accent } else { th.faint });
-        let tw = p.text(&txt, rect(l, y + 1.0, r, y + 18.0), &f.f11, if pct > 0.0 { th.level(pct) } else { th.muted }, Align::R);
-        p.text(email, rect(l + 16.0, y, r - tw - 8.0, y + 18.0), if i.is_none() { &f.f12b } else { &f.f12 }, th.text, Align::L);
-        p.fill(rect(l + 16.0, y + 21.0, r, y + 25.0), 2.0, th.track);
-        if pct > 0.0 {
-            p.fill(rect(l + 16.0, y + 21.0, l + 16.0 + ((r - l - 16.0) * pct.min(100.0) as f32 / 100.0).max(4.0), y + 25.0), 2.0, th.level(pct));
-        }
-        // 第三行：左边额度重置时间，开着自动打卡时右边是上次 / 下次打卡
-        let ping = if !a.cfg.ping {
-            String::new()
-        } else if pinging {
-            tr("打卡中…", "Pinging…").into()
-        } else {
-            let last = a.pinged.get(if i.is_some() { email } else { a.email.as_str() }).map(|t| format!("{} {} · ", tr("上次打卡", "Pinged"), fmt_clock(*t))).unwrap_or_default();
-            let next = accounts::next_ping(q, after, time::now()).map(|t| format!("{} {}", tr(if last.is_empty() { "下次打卡" } else { "下次" }, "next"), fmt_clock(t))).unwrap_or_default();
-            last + &next
-        };
-        let pw = p.text(&ping, rect(l, y + 28.0, r, y + 44.0), &f.f11, th.muted, Align::R);
-        if let Fetch::Ok(ws) = q {
-            let rs: Vec<_> = ws.iter().filter_map(|w| Some(format!("{} {}", if w.kind == Kind::Session { "5h" } else if w.kind == Kind::Week { tr("周", "wk") } else { return None }, fmt_clock(w.resets?)))).collect();
-            if !rs.is_empty() {
-                p.text(&format!("{} {}", tr("重置", "Resets"), rs.join(" · ")), rect(l + 16.0, y + 28.0, r - pw - 8.0, y + 44.0), &f.f11, th.muted, Align::L);
-            }
-        }
-        y += 50.0;
+fn account_rows(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let (th, f, l, r) = (&a.theme, &a.fonts, PAD, w - PAD);
+    p.text(tr("账号", "Accounts"), rect(l, 0.0, r, 18.0), &f.f12b, th.text, Align::L);
+    let mut y = 26.0;
+    let local = !a.email.is_empty() || !matches!(a.quota, Fetch::NoLogin);
+    if local || (!crate::waker::linked(&a.data) && a.accounts.is_empty()) {
+        let note = if a.stale { tr("刷新失败，显示上次数据", "Refresh failed; showing previous data") } else { "" };
+        y = account_card(p, a, w, y, &a.email, &a.plan, tr("本机", "Local"), &a.quota, note, Hit::Quota, hits);
     }
-    y - 8.0
+    for (i, account) in a.accounts.iter().enumerate() {
+        let plan = quota::creds(&account.dir).map(|c| c.plan).unwrap_or_default();
+        y = account_card(p, a, w, y, &account.email, &plan, tr("点击切换", "Click to switch"), &account.quota, "", Hit::Account(i), hits);
+    }
+    let remote = a.identity.as_ref().and_then(|r| r.as_ref().ok()).filter(|r| r.has_usage());
+    let same_account = remote.is_some_and(|r| !r.email.is_empty() && (r.email == a.email || a.accounts.iter().any(|a| a.email == r.email)));
+    if let Some(remote) = remote.filter(|_| crate::waker::linked(&a.data) && !same_account) {
+        let q = Fetch::Ok(remote.quota.clone().unwrap_or_default());
+        let note = if remote.result == "ok" { "" } else { remote.note() };
+        y = account_card(p, a, w, y, &remote.email, &remote.plan, "VPS Token", &q, note, Hit::Remote, hits);
+    }
+    // 最后一张卡的底色比内容多出 4
+    (y - CARD_GAP + 4.0).max(18.0)
+}
+
+/// 一张账号卡：邮箱一行（右边是等级和来源），5 小时和周额度各一行（进度条夹在百分比和重置时间之间）。
+/// 悬停时浅色高亮，当前账号底色更深
+fn account_card(p: &P, a: &App, w: f32, mut y: f32, email: &str, plan: &str, source: &str, quota: &Fetch, note: &str, hit: Hit, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let (th, f, l, r) = (&a.theme, &a.fonts, PAD, w - PAD);
+    let current = !email.is_empty() && email == a.email;
+    let status = if !note.is_empty() { note } else {
+        match quota {
+            Fetch::Expired => tr("登录已过期", "Login expired"),
+            Fetch::NoLogin => tr("尚未获取额度", "Usage unavailable"),
+            Fetch::Changed(_) => tr("无法查询额度：权限或接口限制", "Usage unavailable: access or API restriction"),
+            Fetch::Err(_) => tr("额度查询中或暂不可用", "Usage loading or unavailable"),
+            _ => "",
+        }
+    };
+    let bg = rect(l - 6.0, y - 4.0, r + 6.0, y + if status.is_empty() { 58.0 } else { 76.0 });
+    let alpha = match (current, a.hover == Some(hit)) { (true, true) => 0.22, (true, false) => 0.14, (false, true) => 0.07, _ => 0.0 };
+    if alpha > 0.0 { p.fill(bg, 5.0, with_a(th.accent, alpha)); }
+    hits.push((bg, hit));
+    if current { p.dot(l + 3.0, y + 9.0, 3.0, th.accent); }
+    let tag = p.text(if current { tr("当前账号", "Current") } else { source }, rect(l, y, r, y + 18.0), &f.f11, if current { th.accent } else { th.muted }, Align::R);
+    let plan_w = if plan.is_empty() { 0.0 } else { p.text(plan, rect(l, y, r - tag - 8.0, y + 18.0), &f.f11, th.muted, Align::R) + 8.0 };
+    p.text(if email.is_empty() { tr("邮箱未获取", "Email unavailable") } else { email }, rect(l + 14.0, y, r - tag - plan_w - 8.0, y + 18.0), &f.f12b, th.text, Align::L);
+    y += 20.0;
+    // 列宽固定，两行的进度条才对齐
+    let (bar_l, bar_r) = (l + 82.0, r - 104.0);
+    for (kind, label) in [(Kind::Session, tr("5 小时", "5-hour")), (Kind::Week, tr("周额度", "Weekly"))] {
+        let window = match quota { Fetch::Ok(ws) => ws.iter().find(|wd| wd.kind == kind), _ => None };
+        let percent = window.map(|wd| format!("{:.0}%", wd.pct.clamp(0.0, 100.0))).unwrap_or_else(|| "—".into());
+        let reset = window.and_then(|wd| wd.resets).map(|t| time::stamp(t, a.cfg.tz)).unwrap_or_else(|| "—".into());
+        p.text(label, rect(l, y, l + 44.0, y + 16.0), &f.f11, th.muted, Align::L);
+        p.text(&percent, rect(l + 44.0, y, bar_l - 6.0, y + 16.0), &f.f11, window.map(|wd| th.level(wd.pct)).unwrap_or(th.muted), Align::R);
+        p.fill(rect(bar_l, y + 6.0, bar_r, y + 10.0), 2.0, th.track);
+        if let Some(wd) = window.filter(|wd| wd.pct > 0.0) {
+            p.fill(rect(bar_l, y + 6.0, bar_l + (bar_r - bar_l) * wd.pct.clamp(0.0, 100.0) as f32 / 100.0, y + 10.0), 2.0, th.level(wd.pct));
+        }
+        p.text(&format!("{} {reset}", tr("重置", "Resets")), rect(bar_r + 8.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+        y += 18.0;
+    }
+    if !status.is_empty() {
+        p.text(status, rect(l, y, r, y + 16.0), &f.f11, th.muted, Align::L);
+        y += 18.0;
+    }
+    y - 2.0 + CARD_GAP
 }
 
 /// 会话框的标题行，画在框顶不滚动，返回高度
@@ -592,6 +562,11 @@ fn session_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit
 }
 
 fn token_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let y = if a.cfg.heatmap { heatmap_box(p, a, w, hits) } else { 0.0 };
+    if a.cfg.projects { project_rows(p, a, w, if y > 0.0 { y + GAP } else { 0.0 }, hits) } else { y }
+}
+
+fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
     let (th, f) = (&a.theme, &a.fonts);
     let (l, r) = (PAD, w - PAD);
     let mut y = 0.0;
@@ -601,7 +576,10 @@ fn token_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
     let cr = a.cfg.cache_read;
     let tw = p.text("Token", rect(l, y, r, y + 20.0), &f.f12b, th.text, Align::L);
     // 含不含缓存读取的滑动开关，在日 / 周切换左边
-    let sx = r - 64.0 - 10.0 - 26.0;
+    let close = rect(r - 20.0, y, r, y + 20.0);
+    p.text("×", close, &f.f12, th.muted, Align::C);
+    hits.push((close, Hit::Heatmap));
+    let sx = r - 88.0 - 10.0 - 26.0;
     let lw = p.text(tr("缓存", "Cache"), rect(l, y + 1.0, sx - 5.0, y + 20.0), &f.f11, th.muted, Align::R);
     let sb = rect(sx - 5.0 - lw - 4.0, y, sx + 26.0 + 4.0, y + 20.0);
     if a.hover == Some(Hit::Cache) {
@@ -615,7 +593,7 @@ fn token_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
     p.text(&span, rect(l + tw + 8.0, y + 1.0, sb.left - 4.0, y + 20.0), &f.f11, th.muted, Align::L);
     // 日 / 周切换
     for (i, (label, weekly)) in [(tr("日", "Day"), false), (tr("周", "Week"), true)].into_iter().enumerate() {
-        let b = rect(r - 64.0 + i as f32 * 32.0, y, r - 32.0 + i as f32 * 32.0, y + 20.0);
+        let b = rect(r - 88.0 + i as f32 * 32.0, y, r - 56.0 + i as f32 * 32.0, y + 20.0);
         let on = a.cfg.weekly == weekly;
         p.fill(b, 5.0, if on { th.track } else if a.hover == Some(Hit::Toggle(weekly)) { th.hover } else { rgba(0.0, 0.0, 0.0, 0.0) });
         let tf = if on { &f.f12b } else { &f.f12 };
@@ -705,48 +683,34 @@ fn token_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
             p.fill(rect(cx, y + 3.5, cx + CELL, y + 3.5 + CELL), 2.0, if lv == 0 { th.faint } else { with_a(th.accent, [0.0, 0.32, 0.55, 0.78, 1.0][lv]) });
         }
     }
-    y += 18.0 + GAP;
 
-    // 分项：选中（或当前）的日 / 周，按项目、按模型
-    let (_, proj, model) = usage::breakdown(&a.days, focus.0, focus.1, cr);
-    let head = if focus.0 == focus.1 && focus.0 == today {
-        tr("今天", "Today").to_string()
-    } else if focus.0 == monday(today) && focus.1 >= today {
-        tr("本周", "This week").to_string()
-    } else if focus.0 == focus.1 {
-        fmt_date(focus.0)
-    } else {
-        format!("{} – {}", fmt_date(focus.0), fmt_date(focus.1))
-    };
-    let tw = p.text(&head, rect(l, y, r, y + 18.0), &f.f12b, th.text, Align::L);
-    p.text(&fmt_tokens(ftot), rect(l + tw + 8.0, y + 1.0, r, y + 18.0), &f.f11, th.muted, Align::L);
-    // 看的不是本周时，右边给出本周合计方便对比
-    if focus.0 != monday(today) || focus.1 < today {
-        let wk: u64 = (monday(today)..=today).map(|d| usage::day_total(&a.days, d, cr)).sum();
-        p.text(&format!("{} {}", tr("本周", "This week"), fmt_tokens(wk)), rect(l, y + 1.0, r, y + 18.0), &f.f11, th.muted, Align::R);
+    y + 18.0
+}
+
+fn project_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
+    let (th, f, l, r) = (&a.theme, &a.fonts, PAD, w - PAD);
+    let today = time::today();
+    let (sum, projects, _) = usage::breakdown(&a.days, today, today, a.cfg.cache_read);
+    p.text(tr("今日项目消耗", "Today's projects"), rect(l, y, r - 90.0, y + 18.0), &f.f12b, th.text, Align::L);
+    p.text(&fmt_tokens(sum), rect(l, y, r - 28.0, y + 18.0), &f.f11, th.muted, Align::R);
+    let close = rect(r - 20.0, y, r, y + 18.0);
+    p.text("×", close, &f.f12, th.muted, Align::C);
+    hits.push((close, Hit::Projects));
+    y += 24.0;
+    if projects.is_empty() {
+        p.text(tr("今天暂无消耗", "No usage today"), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::L);
+        return y + 18.0;
     }
-    y += 22.0;
-    if proj.is_empty() {
-        p.text(tr("这段时间没有用量", "No usage in this period"), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::L);
-        y += 18.0;
+    let max = projects.first().map_or(1, |e| e.1).max(1);
+    let col = l + (r - l) * 0.47;
+    for (name, value) in projects {
+        p.text(usage::base_name(&name), rect(l, y, col - 8.0, y + 18.0), &f.f11, th.text, Align::L);
+        let vw = p.text(&fmt_tokens(value), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::R);
+        let bar = (r - vw - 12.0 - col).max(0.0);
+        p.fill(rect(col, y + 7.0, col + bar * value as f32 / max as f32, y + 11.0), 2.0, with_a(th.accent, 0.75));
+        y += 22.0;
     }
-    let col = (r - l) * 0.38;
-    for (list, n, model_names) in [(&proj, 4usize, false), (&model, 3usize, true)] {
-        let max = list.first().map_or(1, |e| e.1).max(1);
-        for (name, v) in list.iter().take(n) {
-            let name = if model_names { usage::model_name(name) } else { name.clone() };
-            p.text(&name, rect(l, y, l + col - 8.0, y + 18.0), &f.f11, th.text, Align::L);
-            let vw = p.text(&fmt_tokens(*v), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::R);
-            let bw = (r - vw - 8.0 - (l + col)).max(10.0);
-            p.fill(rect(l + col, y + 6.0, l + col + bw * (*v as f32 / max as f32).max(0.02), y + 12.0), 3.0, if model_names { with_a(th.text, 0.35) } else { with_a(th.accent, 0.75) });
-            y += 18.0;
-        }
-        if !list.is_empty() {
-            y += 6.0;
-        }
-    }
-    // 最后一组列表后面的间距不要
-    if proj.is_empty() { y } else { y - 6.0 }
+    y
 }
 
 #[cfg(test)]
@@ -774,6 +738,9 @@ mod tests {
         // 屏幕放不下：先压会话框，压到最矮再压 Token 框
         assert_eq!(box_heights([0.0; 3], nat, 50.0, 650.0), [100.0, 200.0, 300.0]);
         assert_eq!(box_heights([0.0; 3], nat, 50.0, 400.0), [100.0, MIN_BOX, 210.0]);
+        // Many accounts must scroll too, leaving the status footer on screen.
+        assert_eq!(box_heights([0.0; 3], [1000.0, 100.0, 200.0], 100.0, 600.0), [420.0, MIN_BOX, MIN_BOX]);
+        assert_eq!(box_heights([0.0; 3], [100.0, 40.0, 0.0], 80.0, 600.0), [100.0, 40.0, 0.0]);
     }
 
     #[test]

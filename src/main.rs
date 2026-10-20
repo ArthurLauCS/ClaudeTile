@@ -12,12 +12,14 @@ mod icon;
 mod json;
 mod menu;
 mod quota;
+mod reset;
 mod sessions;
 mod sync;
 mod sys;
 mod time;
 mod toast;
 mod usage;
+mod waker;
 mod view;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -77,6 +79,9 @@ enum Msg {
     Pinged(Option<PathBuf>, bool),
     /// 添加账号的命令行窗口关了
     Login(PathBuf),
+    Waker(std::result::Result<waker::Status, String>),
+    Predictions(reset::Feeds),
+    Identity(std::result::Result<waker::Identity, String>),
 }
 
 pub struct App {
@@ -105,6 +110,15 @@ pub struct App {
     pub stale: bool,
     next_poll: i64,
     fetching: bool,
+    pub waker: Option<std::result::Result<waker::Status, String>>,
+    waker_fetching: bool,
+    waker_next_poll: i64,
+    pub predictions: Option<reset::Feeds>,
+    predictions_fetching: bool,
+    predictions_next_poll: i64,
+    pub identity: Option<std::result::Result<waker::Identity, String>>,
+    identity_fetching: bool,
+    identity_next_poll: i64,
     pub plan: String,
     /// 5 小时额度的 (时间, 百分比) 样本，估算用完时间；重置时间变了就清空
     pub samples: Vec<(i64, f64)>,
@@ -354,7 +368,14 @@ impl App {
                 self.save_cfg();
             }
             Hit::Account(i) => self.switch_to(i),
-            Hit::Quota => self.fetch_quota(),
+            Hit::Quota | Hit::Remote => { self.fetch_quota(); self.fetch_identity(); }
+            Hit::Waker => { self.menu_action(menu::Id::Waker); }
+            Hit::Heatmap => { self.menu_action(menu::Id::Heatmap); }
+            Hit::Projects => { self.menu_action(menu::Id::Projects); }
+            Hit::Prediction(i) => unsafe {
+                let url = wide(reset::EMBEDS[i]);
+                let _ = ShellExecuteW(Some(self.hwnd), w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL);
+            },
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
             Hit::Split(_) => {}
         }
@@ -432,7 +453,7 @@ impl App {
     /// 开着自动打卡时，5 小时窗口没在跑的账号各打一次卡
     fn auto_ping(&mut self) {
         let now = time::now();
-        if !self.cfg.ping {
+        if !self.cfg.ping || waker::linked(&self.data) {
             return;
         }
         if !self.pinging && now >= self.ping_at && accounts::idle(&self.quota, now) {
@@ -671,9 +692,19 @@ impl App {
     pub fn menu_action(&mut self, id: menu::Id) -> bool {
         use menu::Id;
         match id {
+            Id::Heatmap | Id::Projects => {
+                if id == Id::Heatmap { self.cfg.heatmap = !self.cfg.heatmap; } else { self.cfg.projects = !self.cfg.projects; }
+                self.scroll[2] = 0.0;
+                self.cfg.heights[2] = 0.0;
+                self.save_cfg();
+            }
             Id::Opacity => return false,
             Id::Top => self.set_topmost(!self.cfg.topmost),
             Id::Ping => {
+                if waker::linked(&self.data) {
+                    let _ = waker::configure(&self.data);
+                    return true;
+                }
                 self.cfg.ping = !self.cfg.ping;
                 self.save_cfg();
                 self.auto_ping();
@@ -691,6 +722,10 @@ impl App {
                 self.cfg.alert = v;
                 self.save_cfg();
             }
+            Id::Tz(v) => {
+                self.cfg.tz = v;
+                self.save_cfg();
+            }
             Id::Lang(en) => {
                 self.cfg.en = Some(en);
                 config::set_lang(self.cfg.en);
@@ -699,6 +734,10 @@ impl App {
             }
             Id::Refresh => {
                 self.fetch_quota();
+                self.fetch_waker();
+                self.fetch_predictions();
+                self.fetch_identity();
+                for i in 0..self.accounts.len() { self.fetch_acct(i); }
                 self.request_scan();
                 self.reload_sessions();
             }
@@ -712,6 +751,16 @@ impl App {
                 unsafe {
                     let _ = DestroyWindow(self.hwnd);
                 }
+                return true;
+            }
+            Id::Waker => {
+                if let Err(error) = waker::configure(&self.data) {
+                    unsafe {
+                        let text = wide(&error);
+                        let _ = MessageBoxW(Some(self.hwnd), PCWSTR(text.as_ptr()), w!("ClaudeTile"), MB_OK | MB_ICONINFORMATION);
+                    }
+                }
+                self.fetch_waker();
                 return true;
             }
         }
@@ -741,6 +790,24 @@ impl App {
     fn drain(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
+                Msg::Identity(identity) => {
+                    self.identity_fetching = false;
+                    self.identity_next_poll = time::now() + 300;
+                    self.identity = Some(identity);
+                    self.invalidate();
+                }
+                Msg::Predictions(feeds) => {
+                    self.predictions_fetching = false;
+                    self.predictions_next_poll = time::now() + 300;
+                    self.predictions = Some(feeds);
+                    self.invalidate();
+                }
+                Msg::Waker(state) => {
+                    self.waker_fetching = false;
+                    self.waker_next_poll = time::now() + 60;
+                    self.waker = Some(state);
+                    self.invalidate();
+                }
                 Msg::Scan(days, info) => {
                     usage::merge_max(&mut self.days, &days);
                     self.days_dirty = true;
@@ -813,6 +880,37 @@ impl App {
         }
     }
 
+    fn fetch_predictions(&mut self) {
+        if std::mem::replace(&mut self.predictions_fetching, true) { return; }
+        let proxy = quota::proxy(&self.claude);
+        self.bg(move || Msg::Predictions(reset::fetch(proxy.as_deref())));
+    }
+
+    fn fetch_identity(&mut self) {
+        if !waker::linked(&self.data) { self.identity_next_poll = time::now() + 300; return; }
+        if std::mem::replace(&mut self.identity_fetching, true) { return; }
+        self.identity = None;
+        let data = self.data.clone();
+        self.bg(move || Msg::Identity(waker::identity(&data)));
+    }
+
+    fn fetch_waker(&mut self) {
+        if !waker::linked(&self.data) {
+            self.waker_next_poll = time::now() + 60;
+            return;
+        }
+        if std::mem::replace(&mut self.waker_fetching, true) {
+            return;
+        }
+        // A linked VPS owns wake-ups, including while paused or unreachable.
+        if self.cfg.ping {
+            self.cfg.ping = false;
+            self.save_cfg();
+        }
+        let data = self.data.clone();
+        self.bg(move || Msg::Waker(waker::fetch(&data)));
+    }
+
     /// sync.log 变了（同步跑完）或到了计划任务的下次运行时间，就在后台重读同步状态
     fn check_sync(&mut self) {
         let m = std::fs::metadata(self.claude.join("sync.log")).and_then(|m| m.modified()).ok();
@@ -831,6 +929,15 @@ impl App {
     }
 
     fn tick(&mut self) {
+        if time::now() >= self.predictions_next_poll {
+            self.fetch_predictions();
+        }
+        if time::now() >= self.identity_next_poll {
+            self.fetch_identity();
+        }
+        if time::now() >= self.waker_next_poll {
+            self.fetch_waker();
+        }
         toast::pump(self);
         self.reload_sessions();
         if time::now() >= self.next_poll {
@@ -1178,6 +1285,15 @@ fn main() {
             stale: false,
             next_poll: 0,
             fetching: false,
+            waker: None,
+            waker_fetching: false,
+            waker_next_poll: 0,
+            predictions: None,
+            predictions_fetching: false,
+            predictions_next_poll: 0,
+            identity: None,
+            identity_fetching: false,
+            identity_next_poll: 0,
             plan: String::new(),
             samples: Vec::new(),
             samples_reset: None,
@@ -1234,6 +1350,9 @@ fn main() {
         sys::watch(claude.join("projects"), true, hwnd, WM_APP_PROJ);
         a.reload_accounts();
         a.fetch_quota();
+        a.fetch_waker();
+        a.fetch_predictions();
+        a.fetch_identity();
         a.check_sync();
         // 15 秒一跳：确认会话进程还在、刷新倒计时、到点查额度、看同步状态、存用量历史
         SetTimer(Some(hwnd), T_TICK, 15_000, None);
