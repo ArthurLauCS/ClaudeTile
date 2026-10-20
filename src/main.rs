@@ -81,7 +81,7 @@ enum Msg {
     Login(PathBuf),
     Waker(std::result::Result<waker::Status, String>),
     Predictions(reset::Feeds),
-    Identity(std::result::Result<waker::Identity, String>),
+    Identity(std::result::Result<Vec<waker::Identity>, String>),
 }
 
 pub struct App {
@@ -116,7 +116,7 @@ pub struct App {
     pub predictions: Option<reset::Feeds>,
     predictions_fetching: bool,
     predictions_next_poll: i64,
-    pub identity: Option<std::result::Result<waker::Identity, String>>,
+    pub identity: Option<std::result::Result<Vec<waker::Identity>, String>>,
     identity_fetching: bool,
     identity_next_poll: i64,
     pub plan: String,

@@ -96,10 +96,34 @@ class WakerTests(unittest.TestCase):
             waker.configure()
             request.assert_not_called()
         config = waker.read_json("config.json")
-        self.assertEqual(config["token"], "sk-ant-oat03-new")
+        # The single-token config becomes a list; adding keeps the old token.
+        self.assertEqual(config["tokens"], ["sk-ant-oat03-test", "sk-ant-oat03-new"])
+        self.assertNotIn("token", config)
         self.assertEqual(config["expected_egress_ip"], "198.51.100.1")
         self.assertNotIn("sk-ant", json.dumps(waker.status(self.now)))
-        self.assertEqual(waker.status(self.now)["token_tail"], "-new")
+        self.assertEqual([t["tail"] for t in waker.status(self.now)["tokens"]], ["test", "-new"])
+        self.assertEqual(waker.status(self.now)["token_tail"], "test")
+
+    def test_remove_token_by_number(self):
+        waker.write_json("config.json", {"tokens": ["sk-ant-oat03-aaaa", "sk-ant-oat03-bbbb"], "enabled": True})
+        with patch.object(waker, "input_line", side_effect=["4", "3", "4", "1", "0"]), patch("builtins.print"):
+            waker.configure()
+        self.assertEqual(waker.read_json("config.json")["tokens"], ["sk-ant-oat03-bbbb"])
+
+    def test_each_token_wakes_once_and_fails_alone(self):
+        waker.write_json("config.json", {"tokens": ["sk-ant-oat03-aaaa", "sk-ant-oat03-bbbb"],
+                                         "enabled": True, "expected_egress_ip": "198.51.100.1"})
+        ok = json.dumps({"type": "result", "subtype": "success", "is_error": False})
+        with patch.object(waker, "egress", return_value="198.51.100.1"), \
+             patch.object(waker, "usage", return_value=None), \
+             patch.object(waker, "command", side_effect=[(0, ok), (1, ""), (0, ok)]) as cli:
+            self.assertEqual(waker.wake(self.now), "sent,request_failed")
+            # Only the failed token is retried in the next cron minute.
+            self.assertEqual(waker.wake(self.now + 60), "sent")
+            self.assertEqual(waker.wake(self.now + 120), "already_done")
+            self.assertEqual(cli.call_count, 3)
+            self.assertIn("sk-ant-oat03-bbbb", cli.call_args[0][1]["CLAUDE_CODE_OAUTH_TOKEN"])
+        self.assertEqual([t["state"]["result"] for t in waker.status(self.now)["tokens"]], ["sent", "sent"])
 
     def test_same_token_reports_unchanged(self):
         with patch.object(waker, "input_line", side_effect=["1", "0"]), \
@@ -116,7 +140,8 @@ class WakerTests(unittest.TestCase):
                  "seven_day": {"utilization": 53, "resets_at": None}, "secret": "not-returned"}
         with patch.object(waker, "egress", return_value="198.51.100.1"), \
              patch.object(waker, "command", side_effect=[(0, json.dumps(body) + "\n200"), (0, json.dumps(usage) + "\n200")]) as request:
-            result = waker.profile()
+            result = waker.profile()["accounts"][0]
+            self.assertEqual(result["tail"], "test")
             self.assertEqual(result["email"], "test@example.com")
             self.assertEqual(result["plan"], "Max 5x")
             self.assertEqual(result["usage"]["limits"][0]["percent"], 20)
@@ -133,13 +158,14 @@ class WakerTests(unittest.TestCase):
     def test_profile_scope_and_proxy_failures_never_guess_identity(self):
         with patch.object(waker, "egress", return_value="198.51.100.1"), \
              patch.object(waker, "command", return_value=(0, "{}\n403")):
-            self.assertEqual(waker.profile(), {"result": "no_profile_scope", "usage_status": "403"})
+            self.assertEqual(waker.profile(), {"result": "ok", "accounts": [
+                {"result": "no_profile_scope", "usage_status": "403", "tail": "test"}]})
         with patch.object(waker, "egress", return_value="203.0.113.1"), patch.object(waker, "command") as request:
-            self.assertEqual(waker.profile(), {"result": "egress_mismatch"})
+            self.assertEqual(waker.profile(), {"result": "egress_mismatch", "accounts": []})
             request.assert_not_called()
         waker.write_json("config.json", {})
         with patch.object(waker, "command") as request:
-            self.assertEqual(waker.profile(), {"result": "waiting_token"})
+            self.assertEqual(waker.profile(), {"result": "waiting_token", "accounts": []})
             request.assert_not_called()
 
 if __name__ == "__main__":

@@ -21,25 +21,35 @@ pub struct Status {
     pub configured: bool,
     pub enabled: bool,
     pub next: i64,
+    /// 每个已存 Token 一项；只认单个 Token 的旧版服务器给一项
+    pub tokens: Vec<TokenState>,
+    /// 服务器上的 cron 文件在不在；旧版服务器不返回，按在算
+    pub cron: bool,
+}
+
+#[derive(Debug)]
+pub struct TokenState {
+    /// Token 的末 4 位，只用来认出存的是哪一个；旧版服务器不返回
+    pub tail: String,
     pub result: String,
     pub at: Option<i64>,
     pub resets: Option<i64>,
-    /// 已存 Token 的末 4 位，只用来认出存的是哪一个；旧版服务器不返回
-    pub tail: String,
-    /// 服务器上的 cron 文件在不在；旧版服务器不返回，按在算
-    pub cron: bool,
 }
 
 impl Status {
     fn parse(text: &str) -> Option<Self> {
         let j = Json::parse(text)?;
         let (Json::Bool(configured), Json::Bool(enabled)) = (j.get("configured"), j.get("enabled")) else { return None };
-        let state = j.get("state");
-        Some(Self { configured: *configured, enabled: *enabled, next: j.get("next_at").num()? as i64,
+        let token = |tail: &Json, state: &Json| TokenState { tail: tail.str().unwrap_or("").into(),
             result: state.get("result").str().unwrap_or("").into(),
             at: state.get("at").num().map(|n| n as i64),
-            resets: state.get("resets_at").num().map(|n| n as i64),
-            tail: j.get("token_tail").str().unwrap_or("").into(),
+            resets: state.get("resets_at").num().map(|n| n as i64) };
+        let tokens = match j.get("tokens") {
+            Json::Arr(items) => items.iter().map(|t| token(t.get("tail"), t.get("state"))).collect(),
+            _ if *configured => vec![token(j.get("token_tail"), j.get("state"))],
+            _ => Vec::new(),
+        };
+        Some(Self { configured: *configured, enabled: *enabled, next: j.get("next_at").num()? as i64, tokens,
             cron: !matches!(j.get("cron"), Json::Bool(false)) })
     }
 
@@ -55,17 +65,22 @@ impl Status {
         }
     }
 
-    /// 第二行：VPS 上存了哪个 Token，以及最后一次执行的结果和时间
-    pub fn detail(&self, tz: u32) -> String {
-        let token = if !self.configured { tr("未存 Token", "No token saved").to_string() }
-            else if self.tail.is_empty() { tr("Token 已保存", "Token saved").into() }
-            else { format!("Token …{}", self.tail) };
-        match self.at {
-            Some(at) if !self.result.is_empty() => format!("{token} · {} {}", self.last(), time::stamp(at, tz)),
-            _ => format!("{token} · {}", self.last()),
+    /// 唤醒行下面每个 Token 一行：末 4 位，以及它最后一次执行的结果和时间
+    pub fn details(&self, tz: u32) -> Vec<String> {
+        if self.tokens.is_empty() {
+            return vec![format!("{} · {}", tr("未存 Token", "No token saved"), tr("尚未执行", "Not run yet"))];
         }
+        self.tokens.iter().map(|t| {
+            let token = if t.tail.is_empty() { tr("Token 已保存", "Token saved").into() } else { format!("Token …{}", t.tail) };
+            match t.at {
+                Some(at) if !t.result.is_empty() => format!("{token} · {} {}", t.last(), time::stamp(at, tz)),
+                _ => format!("{token} · {}", t.last()),
+            }
+        }).collect()
     }
+}
 
+impl TokenState {
     pub fn last(&self) -> &'static str {
         match self.result.as_str() {
             "sent" => tr("唤醒请求成功", "Wake request succeeded"),
@@ -81,6 +96,8 @@ impl Status {
 
 #[derive(Debug)]
 pub struct Identity {
+    /// 查的是哪个 Token（末 4 位）
+    pub tail: String,
     pub result: String,
     pub email: String,
     pub plan: String,
@@ -95,10 +112,13 @@ impl Identity {
                 && w.pct.is_finite() && w.resets.is_some()))
     }
 
-    fn parse(text: &str) -> Option<Self> {
+    /// 每个 Token 一项；出口不符、没存 Token 时服务器给空列表
+    fn parse_all(text: &str) -> Option<Vec<Self>> {
         let j = Json::parse(text)?;
-        Some(Self { result: j.get("result").str()?.into(), email: j.get("email").str().unwrap_or("").into(), plan: j.get("plan").str().unwrap_or("").into(),
-            quota: crate::quota::parse_value(j.get("usage")), usage_status: j.get("usage_status").str().unwrap_or("").into() })
+        let Json::Arr(items) = j.get("accounts") else { return None };
+        items.iter().map(|j| Some(Self { tail: j.get("tail").str().unwrap_or("").into(), result: j.get("result").str()?.into(),
+            email: j.get("email").str().unwrap_or("").into(), plan: j.get("plan").str().unwrap_or("").into(),
+            quota: crate::quota::parse_value(j.get("usage")), usage_status: j.get("usage_status").str().unwrap_or("").into() })).collect()
     }
 
     pub fn note(&self) -> &'static str {
@@ -140,8 +160,8 @@ pub fn fetch(data: &Path) -> Result<Status, String> {
     Status::parse(&request(data, "status", 20)?).ok_or_else(|| tr("VPS 状态格式不正确", "Invalid VPS status format").into())
 }
 
-pub fn identity(data: &Path) -> Result<Identity, String> {
-    Identity::parse(&request(data, "profile", 90)?).ok_or_else(|| tr("VPS 账号资料格式不正确", "Invalid VPS profile format").into())
+pub fn identity(data: &Path) -> Result<Vec<Identity>, String> {
+    Identity::parse_all(&request(data, "profile", 90)?).ok_or_else(|| tr("VPS 账号资料格式不正确", "Invalid VPS profile format").into())
 }
 
 fn request(data: &Path, action: &str, timeout: u64) -> Result<String, String> {
@@ -178,34 +198,50 @@ mod tests {
     #[test]
     fn status_distinguishes_sent_from_confirmed_reset() {
         let s = Status::parse(r#"{"configured":true,"enabled":true,"next_at":1792537200,"state":{"result":"sent","at":1792450801,"resets_at":null}}"#).unwrap();
-        assert_eq!(s.result, "sent");
-        assert_eq!(s.resets, None);
+        assert_eq!(s.tokens[0].result, "sent");
+        assert_eq!(s.tokens[0].resets, None);
         assert!(Status::parse(r#"{"error":"unauthorized"}"#).is_none());
         assert!(Status::parse(r#"{"configured":"true","enabled":true,"next_at":1}"#).is_none());
-        // 旧版服务器没有 token_tail / cron
-        assert_eq!(s.detail(0), "Token 已保存 · 唤醒请求成功 10-20 07:00");
+        // 旧版服务器没有 tokens / token_tail / cron
+        assert_eq!(s.details(0), ["Token 已保存 · 唤醒请求成功 10-20 07:00"]);
         assert_eq!(s.summary(0), "已启用 · 下次 10-21 07:00");
         let s = Status::parse(r#"{"configured":true,"enabled":true,"next_at":1,"token_tail":"Ab12","cron":false,"state":{}}"#).unwrap();
-        assert_eq!(s.detail(0), "Token …Ab12 · 尚未执行");
+        assert_eq!(s.details(0), ["Token …Ab12 · 尚未执行"]);
         assert_eq!(s.summary(0), "定时任务未安装");
+        let s = Status::parse(r#"{"configured":false,"enabled":true,"next_at":1,"tokens":[],"state":{}}"#).unwrap();
+        assert_eq!(s.details(0), ["未存 Token · 尚未执行"]);
+    }
+
+    #[test]
+    fn status_lists_every_token() {
+        let s = Status::parse(r#"{"configured":true,"enabled":true,"next_at":1,"token_tail":"Ab12","state":{},
+            "tokens":[{"tail":"Ab12","state":{"result":"sent","at":1792450801}},{"tail":"Cd34","state":{}}]}"#).unwrap();
+        assert_eq!(s.details(0), ["Token …Ab12 · 唤醒请求成功 10-20 07:00", "Token …Cd34 · 尚未执行"]);
+    }
+
+    fn one(item: &str) -> Identity {
+        Identity::parse_all(&format!(r#"{{"result":"ok","accounts":[{item}]}}"#)).unwrap().remove(0)
     }
 
     #[test]
     fn identity_does_not_substitute_a_local_account() {
-        let p = Identity::parse(r#"{"result":"no_profile_scope"}"#).unwrap();
+        let p = one(r#"{"result":"no_profile_scope","tail":"Ab12"}"#);
         assert!(p.email.is_empty() && p.plan.is_empty());
+        assert_eq!(p.tail, "Ab12");
         assert!(!p.has_usage());
-        let p = Identity::parse(r#"{"result":"ok","email":"test@example.com","plan":"Max 5x"}"#).unwrap();
+        let p = one(r#"{"result":"ok","email":"test@example.com","plan":"Max 5x"}"#);
         assert_eq!(p.email, "test@example.com");
         assert_eq!(p.plan, "Max 5x");
         assert!(!p.has_usage());
+        assert!(Identity::parse_all(r#"{"result":"egress_mismatch","accounts":[]}"#).unwrap().is_empty());
+        assert!(Identity::parse_all(r#"{"result":"ok"}"#).is_none());
     }
 
     #[test]
     fn account_card_requires_usage_and_reset_time() {
         let json = r#"{"result":"ok","usage_status":"200","usage":{"five_hour":{"utilization":0,"resets_at":"2026-10-20T04:00:00Z"}}}"#;
-        assert!(Identity::parse(json).unwrap().has_usage());
-        assert!(!Identity::parse(&json.replace("\"200\"", "\"403\"")).unwrap().has_usage());
-        assert!(!Identity::parse(&json.replace("\"2026-10-20T04:00:00Z\"", "null")).unwrap().has_usage());
+        assert!(one(json).has_usage());
+        assert!(!one(&json.replace("\"200\"", "\"403\"")).has_usage());
+        assert!(!one(&json.replace("\"2026-10-20T04:00:00Z\"", "null")).has_usage());
     }
 }
