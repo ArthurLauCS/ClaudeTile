@@ -102,6 +102,15 @@ pub fn idle(q: &Fetch, now: i64) -> bool {
     }
 }
 
+/// 自动打卡下次什么时候打：5 小时窗口重置时（没在跑就是现在），不早于 after；读不到额度时不知道
+pub fn next_ping(q: &Fetch, after: i64, now: i64) -> Option<i64> {
+    match q {
+        Fetch::Ok(ws) => Some(ws.iter().find(|w| w.kind == Kind::Session).and_then(|w| w.resets).unwrap_or(now).max(after).max(now)),
+        Fetch::Expired => Some(after.max(now)),
+        _ => None,
+    }
+}
+
 /// 打卡，返回成没成功。阻塞，最多 5 分钟，在后台线程里跑
 pub fn ping(exe: &Path, dir: Option<&Path>, proxy: Option<&str>) -> bool {
     let work = std::env::temp_dir().join("claude-ping");
@@ -147,6 +156,17 @@ pub fn pcts(q: &Fetch) -> Option<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quota::Window;
+
+    #[test]
+    fn next() {
+        let q = |r| Fetch::Ok(vec![Window { kind: Kind::Session, pct: 5.0, resets: r }]);
+        // 窗口在跑：重置时；没在跑：现在，但不早于上次打卡后的等待
+        assert_eq!(next_ping(&q(Some(500)), 0, 100), Some(500));
+        assert_eq!(next_ping(&q(Some(50)), 0, 100), Some(100));
+        assert_eq!(next_ping(&q(None), 300, 100), Some(300));
+        assert_eq!(next_ping(&Fetch::Err(String::new()), 0, 100), None);
+    }
 
     #[test]
     fn swap() {

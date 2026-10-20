@@ -7,7 +7,9 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
+use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::TaskScheduler::*;
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows::Win32::System::Variant::VARIANT;
@@ -71,8 +73,15 @@ fn next_run() -> Option<i64> {
         let v = VARIANT::default();
         s.Connect(&v, &v, &v, &v).ok()?;
         let t = s.GetFolder(&BSTR::from("\\")).ok()?.GetTask(&BSTR::from(TASK)).ok()?;
-        // 没有下次（任务停用、触发器都过期）时是 0
-        time::from_ole(t.NextRunTime().ok()?)
+        // NextRunTime 对带重复间隔的触发器会给出已过去的时间，按触发器从现在起往后算第一次
+        let from = GetLocalTime();
+        let to = SYSTEMTIME { wYear: from.wYear + 1, ..from };
+        let (mut n, mut p) = (1u32, std::ptr::null_mut());
+        // 任务停用、触发器都过期时 n = 0
+        t.GetRunTimes(&from, &to, &mut n, &mut p).ok()?;
+        let r = (n > 0).then(|| time::from_local(&*p)).flatten();
+        CoTaskMemFree(Some(p as _));
+        r
     }
 }
 

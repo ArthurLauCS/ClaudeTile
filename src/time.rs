@@ -82,17 +82,11 @@ pub fn local_day(t: i64) -> i32 {
     local(t).0
 }
 
-/// 本地时间的 OLE 日期（1899-12-30 起的天数，计划任务用它）→ Unix 秒；0 表示没有
-pub fn from_ole(d: f64) -> Option<i64> {
-    if !(d > 0.0) {
-        return None;
-    }
-    let (y, m, dd) = civil(d.floor() as i32 - 25569);
-    let s = ((d - d.floor()) * 86400.0).round() as u16;
-    let loc = SYSTEMTIME { wYear: y as u16, wMonth: m as u16, wDay: dd as u16, wHour: s / 3600, wMinute: s / 60 % 60, wSecond: s % 60, ..Default::default() };
+/// 本地时间 → Unix 秒
+pub fn from_local(loc: &SYSTEMTIME) -> Option<i64> {
     let (mut utc, mut ft) = (SYSTEMTIME::default(), FILETIME::default());
     unsafe {
-        TzSpecificLocalTimeToSystemTime(None, &loc, &mut utc).ok()?;
+        TzSpecificLocalTimeToSystemTime(None, loc, &mut utc).ok()?;
         SystemTimeToFileTime(&utc, &mut ft).ok()?;
     }
     Some((((ft.dwHighDateTime as i64) << 32 | ft.dwLowDateTime as i64) - EPOCH_DIFF) / 10_000_000)
@@ -128,10 +122,9 @@ mod tests {
     }
 
     #[test]
-    fn ole() {
-        // 2026-10-19 08:00 本地：OLE 日期 = 天号 + 25569
-        let t = from_ole(20745.0 + 25569.0 + 8.0 / 24.0).unwrap();
-        assert_eq!(local(t), (20745, 8, 0));
-        assert_eq!(from_ole(0.0), None);
+    fn from_local_roundtrip() {
+        // 2026-10-19 08:00 本地
+        let loc = SYSTEMTIME { wYear: 2026, wMonth: 10, wDay: 19, wHour: 8, ..Default::default() };
+        assert_eq!(local(from_local(&loc).unwrap()), (20745, 8, 0));
     }
 }
