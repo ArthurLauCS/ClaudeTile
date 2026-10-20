@@ -494,10 +494,10 @@ fn account_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, 
     p.text(tr("点击切换", "Click to switch"), rect(l, y + 1.0, r, y + 18.0), &f.f11, th.muted, Align::R);
     y += 22.0;
     let me = if a.email.is_empty() { tr("当前账号", "Current account") } else { a.email.as_str() };
-    let rows = std::iter::once((None, me, &a.quota)).chain(a.accounts.iter().enumerate().map(|(i, x)| (Some(i), x.email.as_str(), &x.quota)));
-    for (i, email, q) in rows {
+    let rows = std::iter::once((None, me, &a.quota, a.pinging, a.ping_at)).chain(a.accounts.iter().enumerate().map(|(i, x)| (Some(i), x.email.as_str(), &x.quota, x.pinging, x.next_ping)));
+    for (i, email, q, pinging, after) in rows {
         if let Some(i) = i {
-            let row = rect(l - 8.0, y - 4.0, r + 8.0, y + 30.0);
+            let row = rect(l - 8.0, y - 4.0, r + 8.0, y + 46.0);
             if a.hover == Some(Hit::Account(i)) {
                 p.fill(row, 6.0, th.hover);
             }
@@ -516,7 +516,24 @@ fn account_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, 
         if pct > 0.0 {
             p.fill(rect(l + 16.0, y + 21.0, l + 16.0 + ((r - l - 16.0) * pct.min(100.0) as f32 / 100.0).max(4.0), y + 25.0), 2.0, th.level(pct));
         }
-        y += 34.0;
+        // 第三行：左边额度重置时间，开着自动打卡时右边是上次 / 下次打卡
+        let ping = if !a.cfg.ping {
+            String::new()
+        } else if pinging {
+            tr("打卡中…", "Pinging…").into()
+        } else {
+            let last = a.pinged.get(if i.is_some() { email } else { a.email.as_str() }).map(|t| format!("{} {} · ", tr("上次打卡", "Pinged"), fmt_clock(*t))).unwrap_or_default();
+            let next = accounts::next_ping(q, after, time::now()).map(|t| format!("{} {}", tr(if last.is_empty() { "下次打卡" } else { "下次" }, "next"), fmt_clock(t))).unwrap_or_default();
+            last + &next
+        };
+        let pw = p.text(&ping, rect(l, y + 28.0, r, y + 44.0), &f.f11, th.muted, Align::R);
+        if let Fetch::Ok(ws) = q {
+            let rs: Vec<_> = ws.iter().filter_map(|w| Some(format!("{} {}", if w.kind == Kind::Session { "5h" } else if w.kind == Kind::Week { tr("周", "wk") } else { return None }, fmt_clock(w.resets?)))).collect();
+            if !rs.is_empty() {
+                p.text(&format!("{} {}", tr("重置", "Resets"), rs.join(" · ")), rect(l + 16.0, y + 28.0, r - pw - 8.0, y + 44.0), &f.f11, th.muted, Align::L);
+            }
+        }
+        y += 50.0;
     }
     y - 8.0
 }

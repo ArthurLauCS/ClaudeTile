@@ -153,6 +153,8 @@ pub struct App {
     /// 当前账号正在打卡、下次可以打卡的时间
     pinging: bool,
     ping_at: i64,
+    /// 各账号（按邮箱）上次打卡成功的时间，不存盘
+    pinged: HashMap<String, i64>,
 }
 
 static mut APP: *mut App = std::ptr::null_mut();
@@ -769,7 +771,15 @@ impl App {
                 }
                 Msg::Pinged(dir, ok) => {
                     // 成功后等 10 分钟让额度接口反映出来，失败 15 分钟后再试
-                    let next = time::now() + if ok { 600 } else { 900 };
+                    let now = time::now();
+                    let email = match &dir {
+                        None => Some(self.email.clone()),
+                        Some(d) => self.accounts.iter().find(|a| a.dir == *d).map(|a| a.email.clone()),
+                    };
+                    if let (true, Some(e)) = (ok, email) {
+                        self.pinged.insert(e, now);
+                    }
+                    let next = now + if ok { 600 } else { 900 };
                     match dir {
                         None => {
                             (self.pinging, self.ping_at) = (false, next);
@@ -1198,6 +1208,7 @@ fn main() {
             accounts: Vec::new(),
             pinging: false,
             ping_at: 0,
+            pinged: HashMap::new(),
         });
         APP = &mut *a;
         a.load_theme();
