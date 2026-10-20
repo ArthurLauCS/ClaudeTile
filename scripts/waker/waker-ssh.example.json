@@ -1,0 +1,6 @@
+{
+  "host": "YOUR_VPS_HOST",
+  "user": "claudetile-waker",
+  "identity_file": "C:\\Users\\YOUR_USER\\.ssh\\claudetile-waker",
+  "known_hosts_file": "C:\\Users\\YOUR_USER\\.ssh\\claudetile-waker-known-hosts"
+}

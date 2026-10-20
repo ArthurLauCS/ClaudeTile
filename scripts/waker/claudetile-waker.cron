@@ -1,0 +1,6 @@
+# Server-side schedule: independent of Windows, VPS timezone and daylight saving.
+CRON_TZ=Asia/Shanghai
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+# Up to 5 short attempts; success/active window is recorded once per Beijing day.
+0-4 7 * * * claudetile-waker /usr/bin/python /opt/claudetile-waker/waker.py wake >/dev/null 2>&1

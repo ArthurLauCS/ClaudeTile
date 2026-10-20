@@ -31,6 +31,7 @@ pub enum Id {
     Opacity,
     Top,
     Ping,
+    Waker,
     Heatmap,
     Projects,
     Auto,
@@ -80,7 +81,11 @@ fn rows(a: &App) -> Vec<Row> {
         Row::Sep,
         // Segoe Fluent Icons：E8FA 添加联系人，E72C 刷新，E7A7 撤销，ED1A 隐藏，E890 显示，E7E8 电源
         Row::Act(Id::AddAccount, "\u{E8FA}", tr("添加账号…", "Add account…")),
-        Row::Switch(Id::Ping, tr("空闲时自动打卡（开 5 小时窗口）", "Auto-start idle 5h windows"), a.cfg.ping),
+        if crate::waker::linked(&a.data) {
+            Row::Act(Id::Waker, "\u{E787}", tr("VPS 定时唤醒 / 填写 Token…", "VPS wake-up / Set token…"))
+        } else {
+            Row::Switch(Id::Ping, tr("空闲时自动打卡（开 5 小时窗口）", "Auto-start idle 5h windows"), a.cfg.ping)
+        },
         Row::Seg(tr("额度提醒", "Usage alert"), [70, 80, 90, 0].iter().map(|&v| (Id::Alert(v), alert_label(v), a.cfg.alert == v)).collect()),
         Row::Act(Id::Refresh, "\u{E72C}", tr("立即刷新", "Refresh now")),
         Row::Sep,

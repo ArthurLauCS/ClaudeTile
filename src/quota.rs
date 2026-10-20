@@ -68,6 +68,10 @@ pub fn plan_name(sub: &str, tier: &str) -> String {
 
 pub fn parse(s: &str) -> Option<Vec<Window>> {
     let j = Json::parse(s)?;
+    parse_value(&j)
+}
+
+pub fn parse_value(j: &Json) -> Option<Vec<Window>> {
     let resets = |w: &Json| w.get("resets_at").str().and_then(time::parse_iso);
     let mut v = Vec::new();
     // limits 是新格式，带按模型计的周额度；没有时退回 five_hour / seven_day

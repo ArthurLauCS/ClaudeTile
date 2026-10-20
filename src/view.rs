@@ -1,5 +1,5 @@
 //! 磁贴的排版和绘制。尺寸都是 DIP，绘制时由渲染目标按窗口 DPI 缩放。
-//! 自上而下：同步、账号额度、会话、可关闭的热力图和今日项目、两行重置信息。
+//! 自上而下：同步/唤醒、账号额度、会话、可关闭的热力图和今日项目、两行重置信息。
 
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -38,6 +38,9 @@ pub enum Hit {
     /// 账号列表里第 i 个其他账号，点了切过去
     Account(usize),
     Quota,
+    /// VPS Token 的账号卡，点了和 Quota 一样刷新
+    Remote,
+    Waker,
     Heatmap,
     Projects,
     Prediction(usize),
@@ -334,7 +337,7 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
     let zone = match a.cfg.tz { 1 => tr("本机时间", "Local time"), 2 => "UTC", _ => tr("北京时间", "Beijing time") };
     p.text(zone, rect(l + 80.0, y, r - 32.0, y + 24.0), &f.f11, th.muted, Align::R);
     y += 30.0;
-    y = service_rows(&p, a, w, y);
+    y = service_rows(&p, a, w, y, &mut hits);
     p.fill(rect(l, y + 7.0, r, y + 8.0), 0.0, th.faint);
     y += SPLIT;
 
@@ -408,8 +411,8 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
 }
 
 
-/// Compact service status.
-fn service_rows(p: &P, a: &App, w: f32, y: f32) -> f32 {
+/// Compact service status; the wake-up row opens the existing token console.
+fn service_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
     let (th, f, l, r) = (&a.theme, &a.fonts, PAD, w - PAD);
     let sync = a.sync.as_ref().map(|s| {
         let state = if s.ok { tr("已同步", "Synced") } else { tr("失败", "Failed") };
@@ -417,7 +420,23 @@ fn service_rows(p: &P, a: &App, w: f32, y: f32) -> f32 {
     }).unwrap_or_else(|| tr("未配置", "Not configured").into());
     p.text(tr("同步", "Sync"), rect(l, y, l + 60.0, y + 18.0), &f.f12, th.muted, Align::L);
     p.text(&sync, rect(l + 60.0, y, r, y + 18.0), &f.f11, if a.sync.as_ref().is_some_and(|s| !s.ok) { th.warn } else { th.text }, Align::R);
-    y + 22.0
+    y += 22.0;
+    let wake = match &a.waker {
+        Some(Ok(s)) => s.summary(a.cfg.tz),
+        Some(Err(_)) => tr("VPS 暂不可达", "VPS unreachable").into(),
+        None if crate::waker::linked(&a.data) => tr("查询中", "Loading").into(),
+        None => if a.cfg.ping { tr("本机自动打卡", "Local idle wake-up") } else { tr("未启用", "Off") }.into(),
+    };
+    let row = rect(l, y, r, y + 18.0);
+    p.text(tr("唤醒", "Wake-up"), row, &f.f12, th.muted, Align::L);
+    p.text(&wake, rect(l + 60.0, y, r, y + 18.0), &f.f11, th.text, Align::R);
+    if crate::waker::linked(&a.data) { hits.push((row, Hit::Waker)); }
+    y += 20.0;
+    if let Some(Ok(status)) = &a.waker {
+        p.text(&status.detail(a.cfg.tz), rect(l + 60.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+        y += 18.0;
+    }
+    y
 }
 
 fn account_rows(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
@@ -425,13 +444,20 @@ fn account_rows(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f3
     p.text(tr("账号", "Accounts"), rect(l, 0.0, r, 18.0), &f.f12b, th.text, Align::L);
     let mut y = 26.0;
     let local = !a.email.is_empty() || !matches!(a.quota, Fetch::NoLogin);
-    if local || a.accounts.is_empty() {
+    if local || (!crate::waker::linked(&a.data) && a.accounts.is_empty()) {
         let note = if a.stale { tr("刷新失败，显示上次数据", "Refresh failed; showing previous data") } else { "" };
         y = account_card(p, a, w, y, &a.email, &a.plan, tr("本机", "Local"), &a.quota, note, Hit::Quota, hits);
     }
     for (i, account) in a.accounts.iter().enumerate() {
         let plan = quota::creds(&account.dir).map(|c| c.plan).unwrap_or_default();
         y = account_card(p, a, w, y, &account.email, &plan, tr("点击切换", "Click to switch"), &account.quota, "", Hit::Account(i), hits);
+    }
+    let remote = a.identity.as_ref().and_then(|r| r.as_ref().ok()).filter(|r| r.has_usage());
+    let same_account = remote.is_some_and(|r| !r.email.is_empty() && (r.email == a.email || a.accounts.iter().any(|a| a.email == r.email)));
+    if let Some(remote) = remote.filter(|_| crate::waker::linked(&a.data) && !same_account) {
+        let q = Fetch::Ok(remote.quota.clone().unwrap_or_default());
+        let note = if remote.result == "ok" { "" } else { remote.note() };
+        y = account_card(p, a, w, y, &remote.email, &remote.plan, "VPS Token", &q, note, Hit::Remote, hits);
     }
     // 最后一张卡的底色比内容多出 4
     (y - CARD_GAP + 4.0).max(18.0)

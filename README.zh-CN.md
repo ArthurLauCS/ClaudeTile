@@ -27,7 +27,9 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 **账号详情。** 主界面按“同步 / 唤醒 → 账号 → 会话 → Token 热力图 / 今日项目消耗 → 重置信息”排列，分区用细线分隔。每个账号显示邮箱、订阅等级、5 小时及周额度百分比、进度条和重置时间；鼠标移上去卡片轻微高亮，当前账号底色更深；无法查询的字段明确留空，不显示为零。
 
-**多账号。** 有几个 Claude 订阅时，菜单里点 **添加账号…** 会弹出命令行窗口，用 `claude auth login` 登录新账号。账号有两个以上时，额度栏下面列出每个账号的 5 小时额度条和每周百分比，点一下就把 Claude Code 切到那个账号（新开的会话用它，正在跑的会话要重开）。打开 **空闲时自动打卡**，哪个账号的 5 小时窗口没在跑，磁贴就用它发一条很小的 Haiku 消息（约 3k token），让窗口在你不在时就开始计时。
+**多账号。** 菜单里的 **添加账号…** 通过 `claude auth login` 登录独立账号。每个账号单独显示完整额度；点击其他账号会切换 Claude Code 的登录，新会话使用它，已运行的会话需重开。VPS Token 的账号由服务器查询；仅在拿到有效额度与重置时间时显示 VPS 账号卡片，查询失败或没有权限时隐藏；缺少 profile 权限时不会借用本机身份。切换本机账号不会替换 VPS Token。
+
+**VPS 定时唤醒。** 配对 VPS 后，右键菜单显示 **VPS 定时唤醒 / 填写 Token…**。Token 只保存在 VPS，任务每天北京时间 07:00 发送短消息，磁贴显示任务是否启用、下次执行、所存 Token 的末 4 位和最后结果；Windows 关机也能执行。本机空闲自动打卡同时停用。目标是约 12:00 重置，但已有窗口和服务端限制可能影响结果。[填写 Token、暂停与部署说明](docs/vps-waker.md)。
 
 **重置信息。** 底部仅两行，显示 [codexreset.vercel.app](https://codexreset.vercel.app/zh) 的 Codex / Claude 状态，每 5 分钟刷新。只使用来源的“已重置 / 未重置 / 可能即将重置”状态，失败显示未知、来源超过 3 小时未更新显示信息较旧。点击行打开嵌入页面。查询公开接口不携带账号或 Token；这是社交媒体推断的额外重置信号，不代表你的个人额度已重置。
 
@@ -65,7 +67,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 ## 数据从哪来
 
-ClaudeTile 只读 Claude Code 本来就存在电脑上的东西，从不改动。
+会话和 Token 统计只读取 Claude Code 的本地数据；显式切换账号会更新登录凭证，开启打卡会发送模型请求。
 
 | 内容 | 来源 |
 |---|---|
@@ -75,7 +77,7 @@ ClaudeTile 只读 Claude Code 本来就存在电脑上的东西，从不改动�
 | 额度 | `https://api.anthropic.com/api/oauth/usage`，用 Claude Code 存在 `%USERPROFILE%\.claude\.credentials.json` 里的登录凭证 |
 | 其他账号 | `%APPDATA%\ClaudeTile\accounts\<账号>`，每个是那个账号登录时用的 `CLAUDE_CONFIG_DIR`。切换时把当前账号的 `.credentials.json` 和 `%USERPROFILE%\.claude.json` 里的 `oauthAccount` 存过去，再把选中账号的拷回来 |
 
-- 这是 ClaudeTile 唯一的网络请求，约 2 分钟一次，没有任何统计上报。代理用环境变量或 `~/.claude/settings.json` 里 `env` 配的那个，和 Claude Code 一致。
+- 额度查询约 5 分钟一次，没有统计上报。代理用环境变量或 `~/.claude/settings.json` 里 `env` 配的那个，和 Claude Code 一致。连接 VPS 后另以 SSH 每分钟读取任务状态；服务器的唤醒请求走独立配置的固定 ISP。
 - 额度接口不是公开 API，可能会变。变了的话，磁贴和提示会告诉你需要更新 ClaudeTile，会话和 Token 统计照常工作。
 - ClaudeTile 不会自己刷新登录凭证。过期后打开一次 Claude Code 就会刷新。
 - Claude Code 默认删除 30 天前的对话记录，所以 ClaudeTile 另存一份每日合计，热力图能保留 30 天以前的历史。
