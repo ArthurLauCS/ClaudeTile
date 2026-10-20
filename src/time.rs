@@ -96,6 +96,16 @@ pub fn today() -> i32 {
     local_day(now())
 }
 
+/// Unix 秒 → "MM-DD HH:MM"；tz 是设置里选的时区：0 北京（UTC+8），1 本机，2 UTC
+pub fn stamp(t: i64, tz: u32) -> String {
+    let (day, h, m) = if tz == 1 { local(t) } else {
+        let s = t + if tz == 2 { 0 } else { 8 * 3600 };
+        (s.div_euclid(86400) as i32, (s.rem_euclid(86400) / 3600) as u32, (s.rem_euclid(3600) / 60) as u32)
+    };
+    let (_, mo, d) = civil(day);
+    format!("{mo:02}-{d:02} {h:02}:{m:02}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +136,16 @@ mod tests {
         // 2026-10-19 08:00 本地
         let loc = SYSTEMTIME { wYear: 2026, wMonth: 10, wDay: 19, wHour: 8, ..Default::default() };
         assert_eq!(local(from_local(&loc).unwrap()), (20745, 8, 0));
+    }
+
+    #[test]
+    fn stamp_zones() {
+        let t = parse_iso("2026-10-20T23:00:00Z").unwrap();
+        assert_eq!(stamp(t, 0), "10-21 07:00");
+        assert_eq!(stamp(parse_iso("2026-10-20T04:00:00-07:00").unwrap(), 0), "10-20 19:00");
+        assert_eq!(stamp(t, 2), "10-20 23:00");
+        let (d, h, m) = local(t);
+        let (_, mo, dd) = civil(d);
+        assert_eq!(stamp(t, 1), format!("{mo:02}-{dd:02} {h:02}:{m:02}"));
     }
 }

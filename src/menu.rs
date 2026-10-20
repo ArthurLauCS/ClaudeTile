@@ -31,9 +31,12 @@ pub enum Id {
     Opacity,
     Top,
     Ping,
+    Heatmap,
+    Projects,
     Auto,
     Alert(u32),
     Lang(bool),
+    Tz(u32),
     AddAccount,
     Refresh,
     Layout,
@@ -67,18 +70,21 @@ fn rows(a: &App) -> Vec<Row> {
         Row::Slider,
         Row::Sep,
         Row::Switch(Id::Top, tr("置顶显示", "Always on top"), a.cfg.topmost),
-        Row::Switch(Id::Ping, tr("空闲时自动打卡（开 5 小时窗口）", "Auto-start idle 5h windows"), a.cfg.ping),
         Row::Switch(Id::Auto, tr("开机自启", "Start with Windows"), sys::autostart()),
-        Row::Seg(tr("额度提醒", "Usage alert"), [70, 80, 90, 0].iter().map(|&v| (Id::Alert(v), alert_label(v), a.cfg.alert == v)).collect()),
+        Row::Switch(Id::Heatmap, tr("显示 Token 热力图", "Show token heatmap"), a.cfg.heatmap),
+        Row::Switch(Id::Projects, tr("显示今日项目消耗", "Show today's project usage"), a.cfg.projects),
+        Row::Act(Id::Layout, "\u{E7A7}", tr("恢复默认布局", "Reset layout")),
         // 语言入口和选项都带英文，切到看不懂的语言后也能找回来
         Row::Seg(tr("语言/Language", "Language"), vec![(Id::Lang(false), "中文/Chinese", !en()), (Id::Lang(true), "English", en())]),
+        Row::Seg(tr("时区", "Time zone"), [(0, tr("北京", "Beijing")), (1, tr("本机", "Local")), (2, "UTC")].iter().map(|&(v, s)| (Id::Tz(v), s, a.cfg.tz == v)).collect()),
         Row::Sep,
         // Segoe Fluent Icons：E8FA 添加联系人，E72C 刷新，E7A7 撤销，ED1A 隐藏，E890 显示，E7E8 电源
         Row::Act(Id::AddAccount, "\u{E8FA}", tr("添加账号…", "Add account…")),
+        Row::Switch(Id::Ping, tr("空闲时自动打卡（开 5 小时窗口）", "Auto-start idle 5h windows"), a.cfg.ping),
+        Row::Seg(tr("额度提醒", "Usage alert"), [70, 80, 90, 0].iter().map(|&v| (Id::Alert(v), alert_label(v), a.cfg.alert == v)).collect()),
         Row::Act(Id::Refresh, "\u{E72C}", tr("立即刷新", "Refresh now")),
-        Row::Act(Id::Layout, "\u{E7A7}", tr("恢复默认布局", "Reset layout")),
-        if a.cfg.hidden { Row::Act(Id::Hide, "\u{E890}", tr("显示磁贴", "Show tile")) } else { Row::Act(Id::Hide, "\u{ED1A}", tr("隐藏磁贴", "Hide tile")) },
         Row::Sep,
+        if a.cfg.hidden { Row::Act(Id::Hide, "\u{E890}", tr("显示磁贴", "Show tile")) } else { Row::Act(Id::Hide, "\u{ED1A}", tr("隐藏磁贴", "Hide tile")) },
         Row::Act(Id::Exit, "\u{E7E8}", tr("退出", "Exit")),
     ]
 }
@@ -121,7 +127,8 @@ pub fn show(a: &mut App, pt: POINT) {
         let y = if pt.y + h > wa.bottom { pt.y - h } else { pt.y };
         let (x, y) = (x.clamp(wa.left, (wa.right - w).max(wa.left)), y.clamp(wa.top, (wa.bottom - h).max(wa.top)));
         // WS_THICKFRAME 只为了要系统阴影，边框由 WM_NCCALCSIZE 去掉
-        let Ok(hwnd) = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, MENU_CLASS, w!("ClaudeTile menu"), WS_POPUP | WS_THICKFRAME, x, y, w, h, None, None, None, None) else { return };
+        // Owned popups stay above their owner when its topmost state changes.
+        let Ok(hwnd) = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, MENU_CLASS, w!("ClaudeTile menu"), WS_POPUP | WS_THICKFRAME, x, y, w, h, Some(a.hwnd), None, None, None) else { return };
         let dark = BOOL::from(a.sys_dark);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
         let corner = DWMWCP_ROUND;
@@ -330,7 +337,7 @@ pub unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
                             m.focus = cur;
                         }
                         // 分段选项里左右移动就是换选项
-                        Some(Id::Alert(_) | Id::Lang(_)) => {
+                        Some(Id::Alert(_) | Id::Lang(_) | Id::Tz(_)) => {
                             let i = cur.unwrap_or(0);
                             let j = if k == VK_LEFT { i.saturating_sub(1) } else { (i + 1).min(n - 1) };
                             if std::mem::discriminant(&m.hits[i].1) == std::mem::discriminant(&m.hits[j].1) {

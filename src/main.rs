@@ -355,6 +355,8 @@ impl App {
             }
             Hit::Account(i) => self.switch_to(i),
             Hit::Quota => self.fetch_quota(),
+            Hit::Heatmap => { self.menu_action(menu::Id::Heatmap); }
+            Hit::Projects => { self.menu_action(menu::Id::Projects); }
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
             Hit::Split(_) => {}
         }
@@ -671,6 +673,12 @@ impl App {
     pub fn menu_action(&mut self, id: menu::Id) -> bool {
         use menu::Id;
         match id {
+            Id::Heatmap | Id::Projects => {
+                if id == Id::Heatmap { self.cfg.heatmap = !self.cfg.heatmap; } else { self.cfg.projects = !self.cfg.projects; }
+                self.scroll[2] = 0.0;
+                self.cfg.heights[2] = 0.0;
+                self.save_cfg();
+            }
             Id::Opacity => return false,
             Id::Top => self.set_topmost(!self.cfg.topmost),
             Id::Ping => {
@@ -691,6 +699,10 @@ impl App {
                 self.cfg.alert = v;
                 self.save_cfg();
             }
+            Id::Tz(v) => {
+                self.cfg.tz = v;
+                self.save_cfg();
+            }
             Id::Lang(en) => {
                 self.cfg.en = Some(en);
                 config::set_lang(self.cfg.en);
@@ -699,6 +711,7 @@ impl App {
             }
             Id::Refresh => {
                 self.fetch_quota();
+                for i in 0..self.accounts.len() { self.fetch_acct(i); }
                 self.request_scan();
                 self.reload_sessions();
             }
