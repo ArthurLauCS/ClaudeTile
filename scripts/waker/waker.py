@@ -10,6 +10,7 @@ from __future__ import print_function
 import calendar
 import datetime
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -90,6 +91,17 @@ def token_valid(token):
     return bool(re.match(r"^sk-ant-oat[A-Za-z0-9_.-]+$", token or ""))
 
 
+def tokens(config):
+    # A single-token config ("token") still works; configure() rewrites it as "tokens".
+    saved = config.get("tokens")
+    return [t for t in (saved if isinstance(saved, list) else [config.get("token")]) if token_valid(t)]
+
+
+def key(token):
+    # Per-token state is keyed by a digest: tails can collide, tokens stay in config.json only.
+    return hashlib.sha256(token.encode("ascii")).hexdigest()[:16]
+
+
 def environment(token=None):
     # Do not inherit API keys, alternate providers, base URLs or proxy bypasses.
     env = {"HOME": ROOT, "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "en_US.UTF-8"}
@@ -151,9 +163,10 @@ def oauth_request(token, endpoint):
 
 
 def usage(token):
-    # setup-token may lack user:profile: a 403 means "cannot inspect", NOT idle.
+    # setup-token may lack user:profile (403) and the endpoint rate-limits (429): both mean
+    # "cannot inspect", NOT idle. wake() still sends; a message never moves an active window's reset.
     status, body = oauth_request(token, "usage")
-    if status == "403":
+    if status in ("403", "429"):
         return None
     if status != "200":
         raise RuntimeError("usage_http_" + status)
@@ -201,12 +214,19 @@ def parse_profile(body):
 def profile():
     """Read identity on demand; never infer it from cached local accounts."""
     config = read_json("config.json")
-    token = config.get("token")
-    if not token_valid(token):
-        return {"result": "waiting_token"}
+    saved = tokens(config)
+    if not saved:
+        return {"result": "waiting_token", "accounts": []}
     try:
         if egress() != config.get("expected_egress_ip"):
-            return {"result": "egress_mismatch"}
+            return {"result": "egress_mismatch", "accounts": []}
+    except (RuntimeError, ValueError, IOError):
+        return {"result": "unavailable", "accounts": []}
+    return {"result": "ok", "accounts": [dict(account(t), tail=t[-4:]) for t in saved]}
+
+
+def account(token):
+    try:
         status_code, body = oauth_request(token, "profile")
         if status_code == "403":
             result = {"result": "no_profile_scope"}
@@ -236,11 +256,25 @@ def cli_success(output):
         return False
 
 
-def record(result, now, **fields):
+def states():
+    return read_json("state.json").get("tokens") or {}
+
+
+def record(result, now, token, **fields):
     state = {"result": result, "at": int(now), "day": day(now)}
     state.update(fields)
-    write_json("state.json", state)
-    return state
+    saved = states()
+    saved[key(token)] = state
+    write_json("state.json", {"tokens": saved})
+    return result
+
+
+def failure(error):
+    reason = str(error)
+    if reason not in ("timeout", "proxy_unavailable", "usage_network_error",
+                      "usage_http_401", "usage_http_500", "usage_http_503"):
+        reason = "request_failed"
+    return reason
 
 
 def wake(now=None):
@@ -248,50 +282,59 @@ def wake(now=None):
     config = read_json("config.json")
     if not config.get("enabled", True):
         return "paused"
-    if not token_valid(config.get("token")):
+    saved = tokens(config)
+    if not saved:
         return "waiting_token"
     if not scheduled(now):
         return "outside_window"
-    previous = read_json("state.json")
-    if previous.get("day") == day(now) and previous.get("result") in ("sent", "active_window"):
+    previous = states()
+    pending = [t for t in saved if not (previous.get(key(t), {}).get("day") == day(now)
+                                        and previous[key(t)].get("result") in ("sent", "active_window"))]
+    if not pending:
         return "already_done"
     try:
         actual_ip = egress()
         if actual_ip != config.get("expected_egress_ip"):
-            return record("egress_mismatch", now)["result"]
-        reset = usage(config["token"])
+            return ",".join(record("egress_mismatch", now, t) for t in pending)
+    except (RuntimeError, ValueError, IOError) as error:
+        return ",".join(record(failure(error), now, t) for t in pending)
+    # One token after another; the cron minutes behind wait on wake.lock.
+    return ",".join(wake_one(t, now, actual_ip) for t in pending)
+
+
+def wake_one(token, now, actual_ip):
+    try:
+        reset = usage(token)
         if reset is not None and reset > now:
-            return record("active_window", now, resets_at=reset)["result"]
+            return record("active_window", now, token, resets_at=reset)
         code, output = command([CLI, "-p", "--model", "haiku", "--effort", "low",
                                 "--safe-mode", "--no-session-persistence", "--tools", "",
                                 "--system-prompt", "Reply ok.", "--max-turns", "1",
-                                "--output-format", "json"], environment(config["token"]), b"hi", 60)
+                                "--output-format", "json"], environment(token), b"hi", 60)
         if code or not cli_success(output):
-            return record("request_failed", now)["result"]
+            return record("request_failed", now, token)
         # Successful model request is not proof of a 12:00 reset.
         confirmed = None
         try:
-            confirmed = usage(config["token"])
+            confirmed = usage(token)
         except (RuntimeError, ValueError):
             pass
-        return record("sent", now, resets_at=confirmed, egress_ip=actual_ip)["result"]
+        return record("sent", now, token, resets_at=confirmed, egress_ip=actual_ip)
     except (RuntimeError, ValueError, IOError) as error:
-        reason = str(error)
-        if reason not in ("timeout", "proxy_unavailable", "usage_network_error",
-                          "usage_http_401", "usage_http_429", "usage_http_500", "usage_http_503"):
-            reason = "request_failed"
-        return record(reason, now)["result"]
+        return record(failure(error), now, token)
 
 
 def status(now=None):
     now = time.time() if now is None else now
     config = read_json("config.json")
-    configured = token_valid(config.get("token"))
+    previous = states()
     # Last 4 characters only identify which token is stored; cron tells the tile the schedule exists.
-    return {"configured": configured, "enabled": bool(config.get("enabled", True)),
-            "token_tail": config["token"][-4:] if configured else "",
-            "cron": os.path.isfile(CRON),
-            "next_at": next_at(now), "state": read_json("state.json"),
+    entries = [{"tail": t[-4:], "state": previous.get(key(t), {})} for t in tokens(config)]
+    first = entries[0] if entries else {"tail": "", "state": {}}
+    # token_tail / state describe the first token for tiles that predate "tokens".
+    return {"configured": bool(entries), "enabled": bool(config.get("enabled", True)),
+            "tokens": entries, "token_tail": first["tail"], "state": first["state"],
+            "cron": os.path.isfile(CRON), "next_at": next_at(now),
             "schedule": "07:00 Asia/Shanghai", "expected_reset": "12:00 (not guaranteed)"}
 
 
@@ -299,14 +342,15 @@ def configure():
     while True:
         current = status()
         print("\nClaudeTile VPS Waker | 07:00 Beijing (UTC+8)")
-        print("Token: %s | Schedule: %s" % ("..." + current["token_tail"] if current["configured"] else "MISSING",
-                                            "enabled" if current["enabled"] else "paused"))
-        print("1. Set OAuth token (hidden input)\n2. Pause\n3. Resume\n0. Exit")
+        print("Tokens: %s | Schedule: %s" % (", ".join("..." + t["tail"] for t in current["tokens"]) or "MISSING",
+                                             "enabled" if current["enabled"] else "paused"))
+        print("1. Add OAuth token (hidden input)\n2. Pause\n3. Resume\n4. Remove a token\n0. Exit")
         try:
             choice = input_line("Choose: ").strip()
         except (EOFError, KeyboardInterrupt):
             return
         config = read_json("config.json")
+        saved = tokens(config)
         if choice == "0":
             return
         if choice == "1":
@@ -314,15 +358,28 @@ def configure():
             if not token_valid(token):
                 print("Invalid OAuth token format; no change saved.")
                 continue
-            if token == config.get("token") and config.get("enabled", True):
+            if token in saved and config.get("enabled", True):
                 print("This token (...%s) is already saved and enabled; nothing changed." % token[-4:])
                 continue
-            config["token"] = token
+            if token not in saved:
+                saved.append(token)
             config["enabled"] = True
         elif choice in ("2", "3"):
             config["enabled"] = choice == "3"
+        elif choice == "4" and saved:
+            for i, t in enumerate(saved):
+                print("%d. ...%s" % (i + 1, t[-4:]))
+            try:
+                index = int(input_line("Number to remove: ").strip()) - 1
+            except (ValueError, EOFError, KeyboardInterrupt):
+                continue
+            if not 0 <= index < len(saved):
+                continue
+            saved.pop(index)
         else:
             continue
+        config.pop("token", None)
+        config["tokens"] = saved
         write_json("config.json", config)
         print("Saved. No model request was sent. Next scheduled run is at 07:00 Beijing.")
 

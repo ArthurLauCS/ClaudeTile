@@ -8,20 +8,20 @@ ClaudeTile 将 [claude-waker](https://github.com/weidwonder/claude-waker) 的“
 
 1. 在已有 Claude Code 的终端执行 `claude setup-token`，授权需要唤醒的订阅账号。
 2. 右键磁贴 → **VPS 定时唤醒 / 填写 Token…**。
-3. 在 SSH 窗口输入 `1`，粘贴完整 OAuth Token，按回车。隐藏输入不会显示字符。
+3. 在 SSH 窗口输入 `1`，粘贴完整 OAuth Token，按回车。隐藏输入不会显示字符。有多个订阅账号时，每个账号各执行一次 `setup-token`，再各用 `1` 添加。
 4. 输入 `0` 关闭。保存 Token 不会立即发送消息，等待下一次北京时间 07:00。
-5. 菜单中“立即刷新”或等待最多一分钟，磁贴“唤醒”行显示“已启用 · 下次 …”，下一行显示所存 Token 的末 4 位和最后一次执行结果。时间按右键菜单“时区”显示。
+5. 菜单中“立即刷新”或等待最多一分钟，磁贴“唤醒”行显示“已启用 · 下次 …”，下面每个 Token 一行，显示末 4 位和它最后一次执行结果。时间按右键菜单“时区”显示。
 
-再次输入已保存且已启用的同一个 Token 时，窗口提示 “already saved and enabled; nothing changed”，不改写配置。同一窗口的 `2` 暂停，`3` 恢复。Token 只保存到 VPS 的 `/var/lib/claudetile-waker/config.json` 的 `token` 字段（权限 0600），不会下载到磁贴、写入源码或日志。该文件的 `enabled` 决定是否执行，`expected_egress_ip` 固定允许的公网出口。
+再次输入已保存且已启用的同一个 Token 时，窗口提示 “already saved and enabled; nothing changed”，不重复添加。同一窗口的 `2` 暂停、`3` 恢复全部 Token，`4` 按编号删除一个 Token。Token 只保存到 VPS 的 `/var/lib/claudetile-waker/config.json` 的 `tokens` 列表（权限 0600），不会下载到磁贴、写入源码或日志；只有单个 `token` 字段的配置照常使用，下次保存时改写为列表。该文件的 `enabled` 决定是否执行，`expected_egress_ip` 固定允许的公网出口。
 
 ## 时间与额度的边界
 
-- cron 使用 `CRON_TZ=Asia/Shanghai`，每天 07:00 开始；仅在 07:00–07:04 内短暂重试，成功后当天不再请求。错过时间不补跑。
+- cron 使用 `CRON_TZ=Asia/Shanghai`，每天 07:00 开始，依次处理每个 Token；仅在 07:00–07:04 内短暂重试失败的 Token，成功的 Token 当天不再请求。错过时间不补跑。
 - 新窗口在 07:00 开始时，目标是约 12:00 重置。服务器无法强制修改 Anthropic 的重置时间，也不调整周额度。
 - 能查询额度且已有窗口时，跳过唤醒，显示服务端实际重置时间。`setup-token` 可能只有推理权限；额度接口返回 403 时仍可尝试发送短消息，但明确显示“重置时间未确认”。
 - 夜间手动使用同账号、其他机器自动打卡、周额度用尽，都可能使目标无法达到。连接 VPS 后，本机“空闲时自动打卡”被禁用，避免两个调度器竞争；其他电脑也应关闭该选项。
-- 磁贴分别展示本机账号和 VPS Token 账号。VPS 每 5 分钟通过固定 ISP 查询 OAuth profile 和 usage，只返回邮箱、套餐、额度与重置时间；只有取得有效额度与重置时间才显示 VPS 账号卡片，查询失败或没有权限时隐藏。不会从 Token 字符串推断身份，也不会借用本机邮箱。切换本机账号不会替换 VPS Token。
-- 账号详情、Token 末 4 位和 cron 检查需要部署新版 worker；旧版服务器仍可显示任务状态（Token 显示为“已保存”），但无法查询账号详情。
+- 磁贴分别展示本机账号和 VPS Token 账号。VPS 每 5 分钟通过固定 ISP 查询 OAuth profile 和 usage，只返回邮箱、套餐、额度与重置时间；每个 Token 只有取得有效额度与重置时间才显示一张 VPS 账号卡片（标注 Token 末 4 位），查询失败或没有权限时隐藏；与本机账号或另一张卡同邮箱的不重复显示。不会从 Token 字符串推断身份，也不会借用本机邮箱。切换本机账号不会替换 VPS Token。
+- 多 Token、账号详情、Token 末 4 位和 cron 检查需要部署新版 worker；旧版服务器仍可显示任务状态，但只显示一个 Token（最早的版本显示为“已保存”），也无法查询账号详情。
 - “唤醒请求成功”需要官方 CLI 的成功 Result；超时、错误 Result、网络失败不算成功。
 
 ## 网络与权限
@@ -36,7 +36,7 @@ VPS 上的 cron → Python 调度器 → 官方 Claude Code CLI
 
 每次唤醒前检查出口 IP；代理失败或 IP 不符时不发送 Token。子进程仅继承明确配置的环境变量，不继承 API Key、其他服务地址或 `NO_PROXY` 绕过规则。此代理只有一个 SOCKS5 出站，不配置直连回退。
 
-Windows 用系统 OpenSSH 获取精简状态、打开配置窗口。专用 SSH 私钥和已固定的服务器公钥在本机；`status` 只回传 Token 末 4 位和 cron 文件 `/etc/cron.d/claudetile-waker` 是否存在；文件缺失时磁贴显示“定时任务未安装”。服务器 authorized_keys 将密钥限定为 `status` / `configure` / `profile`，禁止端口、Agent 和 X11 转发，不授予 root shell。SSH 不传输本机 Claude 的登录凭证。
+Windows 用系统 OpenSSH 获取精简状态、打开配置窗口。专用 SSH 私钥和已固定的服务器公钥在本机；`status` 只回传每个 Token 的末 4 位与执行结果，以及 cron 文件 `/etc/cron.d/claudetile-waker` 是否存在；文件缺失时磁贴显示“定时任务未安装”。服务器 authorized_keys 将密钥限定为 `status` / `configure` / `profile`，禁止端口、Agent 和 X11 转发，不授予 root shell。SSH 不传输本机 Claude 的登录凭证。
 
 `%APPDATA%\ClaudeTile\waker-ssh.json` 是连接配置，格式见 `scripts/waker/waker-ssh.example.json`。不包含密码或 OAuth Token。要回到本地自动打卡模式，先在 VPS 设置窗口暂停任务，再移走这个连接文件并重启磁贴。
 

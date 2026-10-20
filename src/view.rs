@@ -433,8 +433,10 @@ fn service_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, 
     if crate::waker::linked(&a.data) { hits.push((row, Hit::Waker)); }
     y += 20.0;
     if let Some(Ok(status)) = &a.waker {
-        p.text(&status.detail(a.cfg.tz), rect(l + 60.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
-        y += 18.0;
+        for line in status.details(a.cfg.tz) {
+            p.text(&line, rect(l + 60.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+            y += 18.0;
+        }
     }
     y
 }
@@ -452,12 +454,15 @@ fn account_rows(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f3
         let plan = quota::creds(&account.dir).map(|c| c.plan).unwrap_or_default();
         y = account_card(p, a, w, y, &account.email, &plan, tr("点击切换", "Click to switch"), &account.quota, "", Hit::Account(i), hits);
     }
-    let remote = a.identity.as_ref().and_then(|r| r.as_ref().ok()).filter(|r| r.has_usage());
-    let same_account = remote.is_some_and(|r| !r.email.is_empty() && (r.email == a.email || a.accounts.iter().any(|a| a.email == r.email)));
-    if let Some(remote) = remote.filter(|_| crate::waker::linked(&a.data) && !same_account) {
+    let remotes = a.identity.as_ref().and_then(|r| r.as_ref().ok()).filter(|_| crate::waker::linked(&a.data));
+    let mut shown: Vec<&str> = a.accounts.iter().map(|a| a.email.as_str()).chain([a.email.as_str()]).collect();
+    for remote in remotes.into_iter().flatten().filter(|r| r.has_usage()) {
+        // 本机已登录的账号、同一账号的另一个 Token 不再重复显示
+        if !remote.email.is_empty() && shown.contains(&remote.email.as_str()) { continue }
+        shown.push(&remote.email);
         let q = Fetch::Ok(remote.quota.clone().unwrap_or_default());
         let note = if remote.result == "ok" { "" } else { remote.note() };
-        y = account_card(p, a, w, y, &remote.email, &remote.plan, "VPS Token", &q, note, Hit::Remote, hits);
+        y = account_card(p, a, w, y, &remote.email, &remote.plan, &format!("VPS …{}", remote.tail), &q, note, Hit::Remote, hits);
     }
     // 最后一张卡的底色比内容多出 4
     (y - CARD_GAP + 4.0).max(18.0)
