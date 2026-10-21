@@ -30,7 +30,9 @@ class WakerTests(unittest.TestCase):
         self.assertIsNone(waker.slot(seven + 20 * 3600 + 60))  # 03:01: none, so 07:00 stays fixed
         self.assertEqual(waker.next_at(self.now), noon)
         self.assertEqual(waker.next_at(self.now - 2), seven)
-        self.assertEqual(waker.next_at(seven + 15 * 3600 + 60), seven + 86400)  # after 22:01
+        self.assertEqual(waker.next_at(noon), seven + 10 * 3600 + 120)  # 17:02
+        self.assertEqual(waker.next_at(seven + 10 * 3600 + 120), seven + 15 * 3600 + 180)  # 22:03
+        self.assertEqual(waker.next_at(seven + 15 * 3600 + 180), seven + 86400)  # after 22:03
         with patch.object(waker, "command") as request:
             self.assertEqual(waker.wake(self.now + 3600), "outside_window")
             request.assert_not_called()
