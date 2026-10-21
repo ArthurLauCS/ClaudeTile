@@ -2,5 +2,5 @@
 CRON_TZ=Asia/Shanghai
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
-# Up to 5 short attempts; success/active window is recorded once per Beijing day.
-0-4 7 * * * claudetile-waker /usr/bin/python /opt/claudetile-waker/waker.py wake >/dev/null 2>&1
+# Up to 5 short attempts per run; waker.py keeps the exact minutes (07:00-07:04, xx:01-xx:05).
+0-5 7,12,17,22 * * * claudetile-waker /usr/bin/python /opt/claudetile-waker/waker.py wake >/dev/null 2>&1

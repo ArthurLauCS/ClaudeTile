@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Daily 07:00 Asia/Shanghai wake-up. Python 2.7/3 stdlib (CentOS 7 compatible).
+"""Wake-ups at 07:00, 12:01, 17:01, 22:01 Asia/Shanghai. Python 2.7/3 stdlib (CentOS 7 compatible).
 
 Inspired by weidwonder/claude-waker. Uses the official CLI directly, as the
 desktop's accounts::ping does; no SDK dependency or copied login credentials.
@@ -25,6 +25,9 @@ CLI = "/opt/claudetile-waker/claude"
 PROXY = "http://127.0.0.1:17898"
 CRON = "/etc/cron.d/claudetile-waker"
 OFFSET = 8 * 3600
+# Beijing (hour, minute) of each run. A 5-hour window starts on the whole hour, so a run 1 minute
+# after the previous reset keeps resets at 12:00/17:00/22:00/03:00. None after 03:00: 07:00 stays fixed.
+SLOTS = ((7, 0), (12, 1), (17, 1), (22, 1))
 
 
 def read_json(name):
@@ -47,20 +50,18 @@ def write_json(name, value):
             os.unlink(path)
 
 
-def day(now):
-    return time.strftime("%Y-%m-%d", time.gmtime(now + OFFSET))
+def starts(now):
+    midnight = int((now + OFFSET) // 86400) * 86400 - OFFSET
+    return [midnight + d * 86400 + h * 3600 + m * 60 for d in (0, 1) for h, m in SLOTS]
 
 
-def scheduled(now):
-    local = time.gmtime(now + OFFSET)
-    # Short retries only. Never catch up at noon/after a reboot and shift the window.
-    return local.tm_hour == 7 and local.tm_min < 5
+def slot(now):
+    # Short retries only (5 minutes). Never catch up late/after a reboot and shift the window.
+    return next((s for s in starts(now) if s <= now < s + 300), None)
 
 
 def next_at(now):
-    local_day = int((now + OFFSET) // 86400)
-    target = local_day * 86400 + 7 * 3600 - OFFSET
-    return target if target > now else target + 86400
+    return min(s for s in starts(now) if s > now)
 
 
 def iso_seconds(value):
@@ -261,7 +262,7 @@ def states():
 
 
 def record(result, now, token, **fields):
-    state = {"result": result, "at": int(now), "day": day(now)}
+    state = {"result": result, "at": int(now)}
     state.update(fields)
     saved = states()
     saved[key(token)] = state
@@ -285,10 +286,11 @@ def wake(now=None):
     saved = tokens(config)
     if not saved:
         return "waiting_token"
-    if not scheduled(now):
+    start = slot(now)
+    if start is None:
         return "outside_window"
     previous = states()
-    pending = [t for t in saved if not (previous.get(key(t), {}).get("day") == day(now)
+    pending = [t for t in saved if not (previous.get(key(t), {}).get("at", 0) >= start
                                         and previous[key(t)].get("result") in ("sent", "active_window"))]
     if not pending:
         return "already_done"
@@ -313,7 +315,7 @@ def wake_one(token, now, actual_ip):
                                 "--output-format", "json"], environment(token), b"hi", 60)
         if code or not cli_success(output):
             return record("request_failed", now, token)
-        # Successful model request is not proof of a 12:00 reset.
+        # Successful model request is not proof of the expected reset.
         confirmed = None
         try:
             confirmed = usage(token)
@@ -335,13 +337,14 @@ def status(now=None):
     return {"configured": bool(entries), "enabled": bool(config.get("enabled", True)),
             "tokens": entries, "token_tail": first["tail"], "state": first["state"],
             "cron": os.path.isfile(CRON), "next_at": next_at(now),
-            "schedule": "07:00 Asia/Shanghai", "expected_reset": "12:00 (not guaranteed)"}
+            "schedule": "07:00,12:01,17:01,22:01 Asia/Shanghai",
+            "expected_reset": "12:00,17:00,22:00,03:00 (not guaranteed)"}
 
 
 def configure():
     while True:
         current = status()
-        print("\nClaudeTile VPS Waker | 07:00 Beijing (UTC+8)")
+        print("\nClaudeTile VPS Waker | 07:00 12:01 17:01 22:01 Beijing (UTC+8)")
         print("Tokens: %s | Schedule: %s" % (", ".join("..." + t["tail"] for t in current["tokens"]) or "MISSING",
                                              "enabled" if current["enabled"] else "paused"))
         print("1. Add OAuth token (hidden input)\n2. Pause\n3. Resume\n4. Remove a token\n0. Exit")
@@ -381,7 +384,8 @@ def configure():
         config.pop("token", None)
         config["tokens"] = saved
         write_json("config.json", config)
-        print("Saved. No model request was sent. Next scheduled run is at 07:00 Beijing.")
+        print("Saved. No model request was sent. Next scheduled run is at %s Beijing."
+              % time.strftime("%H:%M", time.gmtime(next_at(time.time()) + OFFSET)))
 
 
 try:

@@ -21,11 +21,16 @@ class WakerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_beijing_schedule_and_no_late_catchup(self):
-        self.assertTrue(waker.scheduled(self.now))
-        self.assertFalse(waker.scheduled(self.now - 2))
-        self.assertFalse(waker.scheduled(self.now + 300))
-        self.assertEqual(waker.next_at(self.now), self.now - 1 + 86400)
-        self.assertEqual(waker.next_at(self.now - 2), self.now - 1)
+        seven, noon = self.now - 1, self.now - 1 + 5 * 3600 + 60
+        self.assertEqual(waker.slot(self.now), seven)
+        self.assertIsNone(waker.slot(self.now - 2))
+        self.assertIsNone(waker.slot(self.now + 300))
+        self.assertIsNone(waker.slot(noon - 1))
+        self.assertEqual(waker.slot(noon + 299), noon)
+        self.assertIsNone(waker.slot(seven + 20 * 3600 + 60))  # 03:01: none, so 07:00 stays fixed
+        self.assertEqual(waker.next_at(self.now), noon)
+        self.assertEqual(waker.next_at(self.now - 2), seven)
+        self.assertEqual(waker.next_at(seven + 15 * 3600 + 60), seven + 86400)  # after 22:01
         with patch.object(waker, "command") as request:
             self.assertEqual(waker.wake(self.now + 3600), "outside_window")
             request.assert_not_called()
@@ -59,6 +64,7 @@ class WakerTests(unittest.TestCase):
             self.assertEqual(waker.wake(self.now), "sent")
             self.assertEqual(waker.wake(self.now + 60), "already_done")
             self.assertEqual(cli.call_count, 1)
+            self.assertEqual(waker.wake(self.now + 5 * 3600 + 60), "sent")  # 12:01 is a new run
         state = waker.status(self.now)["state"]
         self.assertIsNone(state["resets_at"])
         self.assertNotIn("sk-ant", json.dumps(waker.status(self.now)))
