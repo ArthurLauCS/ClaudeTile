@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Wake-ups at 07:00, 12:01, 17:02, 22:03 Asia/Shanghai. Python 2.7/3 stdlib (CentOS 7 compatible).
+"""Wake-ups at 08:00, 13:01, 18:02, 23:03 Asia/Shanghai. Python 2.7/3 stdlib (CentOS 7 compatible).
 
 Inspired by weidwonder/claude-waker. Uses the official CLI directly, as the
 desktop's accounts::ping does; no SDK dependency or copied login credentials.
@@ -26,9 +26,9 @@ PROXY = "http://127.0.0.1:17898"
 CRON = "/etc/cron.d/claudetile-waker"
 OFFSET = 8 * 3600
 # Beijing (hour, minute) of each run. A 5-hour window starts on the whole hour, so a run just after
-# the previous reset keeps resets at 12:00/17:00/22:00/03:00; each run is one minute later than the one
-# before so that reset has surely happened. None after 03:00: the long gap keeps 07:00 fixed.
-SLOTS = ((7, 0), (12, 1), (17, 2), (22, 3))
+# the previous reset keeps resets at 13:00/18:00/23:00/04:00; each run is one minute later than the one
+# before so that reset has surely happened. None after 04:00: the long gap keeps 08:00 fixed.
+SLOTS = ((8, 0), (13, 1), (18, 2), (23, 3))
 
 
 def read_json(name):
@@ -338,14 +338,14 @@ def status(now=None):
     return {"configured": bool(entries), "enabled": bool(config.get("enabled", True)),
             "tokens": entries, "token_tail": first["tail"], "state": first["state"],
             "cron": os.path.isfile(CRON), "next_at": next_at(now),
-            "schedule": "07:00,12:01,17:02,22:03 Asia/Shanghai",
-            "expected_reset": "12:00,17:00,22:00,03:00 (not guaranteed)"}
+            "schedule": "08:00,13:01,18:02,23:03 Asia/Shanghai",
+            "expected_reset": "13:00,18:00,23:00,04:00 (not guaranteed)"}
 
 
 def configure():
     while True:
         current = status()
-        print("\nClaudeTile VPS Waker | 07:00 12:01 17:02 22:03 Beijing (UTC+8)")
+        print("\nClaudeTile VPS Waker | 08:00 13:01 18:02 23:03 Beijing (UTC+8)")
         print("Tokens: %s | Schedule: %s" % (", ".join("..." + t["tail"] for t in current["tokens"]) or "MISSING",
                                              "enabled" if current["enabled"] else "paused"))
         print("1. Add OAuth token (hidden input)\n2. Pause\n3. Resume\n4. Remove a token\n0. Exit")
