@@ -1,10 +1,15 @@
 //! 系统相关的小工具：进程存活、切到会话所在的窗口、目录监视、开机自启。
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
+use windows::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
 use windows::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow, GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::*;
@@ -34,10 +39,10 @@ pub fn alive(pid: u32, start: Option<u64>) -> bool {
     }
 }
 
-/// 切到会话所在的窗口：终端里的会话借它的控制台找到终端窗口（Windows Terminal 只能切到窗口，切不到标签页），
-/// 找不到控制台（桌面版）就沿父进程往上找第一个有可见主窗口的进程
+/// 切到会话所在的窗口：Orca 里的会话切到 Orca 里它那个标签；终端里的会话借它的控制台找到终端窗口
+/// （Windows Terminal 只能切到窗口，切不到标签页）；找不到控制台（桌面版）就沿父进程往上找第一个有可见主窗口的进程
 pub fn focus(pid: u32) -> bool {
-    let Some(w) = console_window(pid).or_else(|| ancestor_window(pid)) else { return false };
+    let Some(w) = orca_window(pid).or_else(|| console_window(pid)).or_else(|| ancestor_window(pid)) else { return false };
     unsafe {
         if IsIconic(w).as_bool() {
             let _ = ShowWindow(w, SW_RESTORE);
@@ -67,22 +72,59 @@ fn console_window(pid: u32) -> Option<HWND> {
     }
 }
 
-fn ancestor_window(pid: u32) -> Option<HWND> {
-    let parents = unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+/// Orca 里的会话挂在 Orca 的后台进程下，往上找不到窗口：按它环境变量里的终端句柄让 Orca 切到那个标签，返回 Orca 的主窗口
+/// （orca terminal switch 只切标签，不把窗口提到前台）
+fn orca_window(pid: u32) -> Option<HWND> {
+    let env = env_of(pid)?;
+    let t = env.get("ORCA_TERMINAL_HANDLE")?;
+    let cli = env.get("PATH")?.split(';').map(|d| Path::new(d).join("orca.exe")).find(|p| p.is_file())?;
+    Command::new(cli).args(["terminal", "switch", "--terminal", t]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW.0).spawn().ok()?;
+    processes().into_iter().filter(|(_, _, exe)| exe.eq_ignore_ascii_case("Orca.exe")).find_map(|(p, _, _)| main_window(p))
+}
+
+/// 另一个进程的环境变量（只读它 PEB 里的环境块），变量名转成大写
+fn env_of(pid: u32) -> Option<HashMap<String, String>> {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid).ok()?;
+        let read = |at: usize, n: usize| {
+            let mut b = vec![0u8; n];
+            ReadProcessMemory(h, at as _, b.as_mut_ptr() as _, n, None).ok().map(|_| b)
+        };
+        let ptr = |at: usize| read(at, 8).map(|b| usize::from_le_bytes(b.try_into().unwrap()));
+        let mut pbi = PROCESS_BASIC_INFORMATION::default();
+        let env = NtQueryInformationProcess(h, ProcessBasicInformation, &mut pbi as *mut _ as _, size_of_val(&pbi) as u32, &mut 0).is_ok().then(|| {
+            // x64：PEB+0x20 是 ProcessParameters，它的 +0x80 是环境块地址、+0x3F0 是环境块字节数（读的是别的进程，长度设个上限）
+            let p = ptr(pbi.PebBaseAddress as usize + 0x20)?;
+            read(ptr(p + 0x80)?, ptr(p + 0x3F0)?.min(1 << 20))
+        });
+        let _ = CloseHandle(h);
+        let w: Vec<u16> = env??.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        Some(String::from_utf16_lossy(&w).split('\0').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_uppercase(), v.to_string())).collect())
+    }
+}
+
+/// 所有进程：(进程号, 父进程号, exe 名)
+fn processes() -> Vec<(u32, u32, String)> {
+    let mut v = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return v };
         let mut pe = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-        let mut m = std::collections::HashMap::new();
         if Process32FirstW(snap, &mut pe).is_ok() {
             loop {
-                m.insert(pe.th32ProcessID, pe.th32ParentProcessID);
+                let n = pe.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                v.push((pe.th32ProcessID, pe.th32ParentProcessID, String::from_utf16_lossy(&pe.szExeFile[..n])));
                 if Process32NextW(snap, &mut pe).is_err() {
                     break;
                 }
             }
         }
         let _ = CloseHandle(snap);
-        m
-    };
+    }
+    v
+}
+
+fn ancestor_window(pid: u32) -> Option<HWND> {
+    let parents: HashMap<u32, u32> = processes().into_iter().map(|(p, pp, _)| (p, pp)).collect();
     let mut p = pid;
     for _ in 0..8 {
         if let Some(w) = main_window(p) {
@@ -159,4 +201,13 @@ pub fn reg_dword(key: PCWSTR, name: PCWSTR) -> Option<u32> {
     let (mut v, mut n) = (0u32, 4u32);
     let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key, name, RRF_RT_REG_DWORD, None, Some(&mut v as *mut _ as _), Some(&mut n)) };
     (r == ERROR_SUCCESS).then_some(v)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn env_of_self() {
+        let e = super::env_of(std::process::id()).unwrap();
+        assert_eq!(e.get("PATH"), std::env::var("PATH").ok().as_ref());
+    }
 }

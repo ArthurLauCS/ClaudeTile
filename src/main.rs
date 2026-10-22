@@ -53,7 +53,7 @@ use view::{Fonts, Hit, Theme};
 
 const CLASS: PCWSTR = w!("ClaudeTileMain");
 const WM_APP_TRAY: u32 = WM_APP + 1;
-/// ~/.claude/sessions 有变化
+/// 会话目录有变化
 const WM_APP_SESS: u32 = WM_APP + 2;
 /// ~/.claude/projects 有变化（对话记录在写）
 const WM_APP_PROJ: u32 = WM_APP + 3;
@@ -188,6 +188,17 @@ fn home() -> PathBuf {
 
 fn appdata() -> PathBuf {
     PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default())
+}
+
+/// 会话目录：~/.claude/sessions；用默认目录时再加上 Orca 各账号档的
+/// （Orca 起 claude 时设了 CLAUDE_CONFIG_DIR=%APPDATA%\orca\claude-profiles\<档>\home，projects 链回了 ~/.claude，sessions 没有）
+fn session_dirs(claude: &Path) -> Vec<PathBuf> {
+    let mut v = vec![claude.join("sessions")];
+    if claude == home().join(".claude") {
+        let orca = std::fs::read_dir(appdata().join("orca").join("claude-profiles")).into_iter().flatten().flatten();
+        v.extend(orca.map(|e| e.path().join("home").join("sessions")).filter(|d| d.is_dir()));
+    }
+    v
 }
 
 fn scale(hwnd: HWND) -> f32 {
@@ -568,7 +579,7 @@ impl App {
     }
 
     fn reload_sessions(&mut self) {
-        let new = sessions::load(&self.claude.join("sessions"));
+        let new = sessions::load(&session_dirs(&self.claude));
         if new.iter().any(|s| s.desktop) {
             self.desk_titles = sessions::desktop_titles(&appdata().join("Claude").join("claude-code-sessions"));
         }
@@ -1179,7 +1190,7 @@ fn dump(claude: &Path, fake: Option<&Path>, out: &Path) {
     let (sum, proj, model) = usage::breakdown(&sc.days, today - 6, today, false);
     s += &format!("7d {} | {:?} | {:?}\n", usage::fmt_tokens(sum), &proj[..proj.len().min(6)], model);
     let titles = sessions::desktop_titles(&appdata().join("Claude").join("claude-code-sessions"));
-    for x in sessions::load(&claude.join("sessions")) {
+    for x in sessions::load(&session_dirs(claude)) {
         let info = sc.sessions.get(&x.id).cloned().unwrap_or_default();
         s += &format!("session {:?} title={:?} desktop_title={:?} tool={:?}\n", x, info.title, titles.get(&x.id), info.tool);
     }
@@ -1346,7 +1357,10 @@ fn main() {
         });
         a.request_scan();
         let _ = std::fs::create_dir_all(claude.join("sessions"));
-        sys::watch(claude.join("sessions"), false, hwnd, WM_APP_SESS);
+        // 磁贴启动后 Orca 新建的账号档不在监视里，它的会话靠 15 秒一跳刷新
+        for d in session_dirs(&claude) {
+            sys::watch(d, false, hwnd, WM_APP_SESS);
+        }
         sys::watch(claude.join("projects"), true, hwnd, WM_APP_PROJ);
         a.reload_accounts();
         a.fetch_quota();

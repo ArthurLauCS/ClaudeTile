@@ -1,10 +1,10 @@
-//! 正在运行的会话：读 Claude Code 自己维护的 ~/.claude/sessions/<进程号>.json。
+//! 正在运行的会话：读 Claude Code 自己维护的 sessions/<进程号>.json（在 ~/.claude 下；Orca 里起的在它各账号档的目录下）。
 //! 每个 claude 进程一份，status 是 busy / idle / waiting（waitingFor 写着在等什么），CLI 和桌面版都有。
 //! 进程崩溃时文件会留下来，所以按进程号和启动时间（procStart）确认进程还在。
 //! 桌面版会话的标题在 %APPDATA%\Claude\claude-code-sessions 里，按 cliSessionId 对上。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::json::Json;
 use crate::sys;
@@ -60,11 +60,10 @@ pub fn parse(s: &str) -> Option<Session> {
 }
 
 /// 进程还活着的会话，等你处理的排最前，其次是在跑的，同类里最近变化的在前
-pub fn load(dir: &Path) -> Vec<Session> {
-    let mut v: Vec<Session> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
+pub fn load(dirs: &[PathBuf]) -> Vec<Session> {
+    let mut v: Vec<Session> = dirs
+        .iter()
+        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten())
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| {
             let s = std::fs::read_to_string(e.path()).ok()?;
