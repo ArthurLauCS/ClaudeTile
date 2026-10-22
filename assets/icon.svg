@@ -1,34 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <!-- 应用图标（40px 及以上）：陶土色底板，上面一条额度进度条，下面一块 Token 热力图 -->
+  <!-- 应用图标（40px 及以上）：陶土色圆形，白色额度环走了四分之三，中间三根用量柱 -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#E8906E"/>
-      <stop offset="0.6" stop-color="#D97757"/>
-      <stop offset="1" stop-color="#B85A3C"/>
-    </linearGradient>
-    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
-      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0" stop-color="#F2A585"/>
+      <stop offset="0.55" stop-color="#D97757"/>
+      <stop offset="1" stop-color="#B0533A"/>
     </linearGradient>
   </defs>
-  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#bg)"/>
-  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#gloss)"/>
-  <!-- 额度条 -->
-  <rect x="48" y="52" width="160" height="22" rx="11" fill="#FFFFFF" fill-opacity="0.30"/>
-  <rect x="48" y="52" width="104" height="22" rx="11" fill="#FFFFFF"/>
-  <!-- 热力图：4 列 3 行，深浅不一 -->
+  <circle cx="128" cy="128" r="118" fill="url(#bg)"/>
+  <!-- 额度环：底轨 + 已用部分，从正上方顺时针 -->
+  <circle cx="128" cy="128" r="74" fill="none" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="26"/>
+  <path d="M128 54 A74 74 0 1 1 54 128" fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round"/>
+  <!-- 用量柱 -->
   <g fill="#FFFFFF">
-    <rect x="48" y="100" width="34" height="30" rx="7" fill-opacity="0.35"/>
-    <rect x="90" y="100" width="34" height="30" rx="7" fill-opacity="0.70"/>
-    <rect x="132" y="100" width="34" height="30" rx="7" fill-opacity="0.35"/>
-    <rect x="174" y="100" width="34" height="30" rx="7"/>
-    <rect x="48" y="138" width="34" height="30" rx="7" fill-opacity="0.70"/>
-    <rect x="90" y="138" width="34" height="30" rx="7"/>
-    <rect x="132" y="138" width="34" height="30" rx="7" fill-opacity="0.55"/>
-    <rect x="174" y="138" width="34" height="30" rx="7" fill-opacity="0.35"/>
-    <rect x="48" y="176" width="34" height="30" rx="7" fill-opacity="0.55"/>
-    <rect x="90" y="176" width="34" height="30" rx="7" fill-opacity="0.35"/>
-    <rect x="132" y="176" width="34" height="30" rx="7"/>
-    <rect x="174" y="176" width="34" height="30" rx="7" fill-opacity="0.70"/>
+    <rect x="96" y="124" width="16" height="32" rx="6" fill-opacity="0.6"/>
+    <rect x="120" y="100" width="16" height="56" rx="6"/>
+    <rect x="144" y="114" width="16" height="42" rx="6" fill-opacity="0.8"/>
   </g>
 </svg>
