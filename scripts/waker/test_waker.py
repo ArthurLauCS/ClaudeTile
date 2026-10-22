@@ -12,7 +12,7 @@ class WakerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = patch.object(waker, "ROOT", self.temp.name)
         self.root.start()
-        self.now = waker.iso_seconds("2026-10-21T07:00:01+08:00")
+        self.now = waker.iso_seconds("2026-10-21T08:00:01+08:00")
         waker.write_json("config.json", {"token": "sk-ant-oat03-test",
                                        "enabled": True, "expected_egress_ip": "198.51.100.1"})
 
@@ -21,18 +21,18 @@ class WakerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_beijing_schedule_and_no_late_catchup(self):
-        seven, noon = self.now - 1, self.now - 1 + 5 * 3600 + 60
-        self.assertEqual(waker.slot(self.now), seven)
+        eight, afternoon = self.now - 1, self.now - 1 + 5 * 3600 + 60
+        self.assertEqual(waker.slot(self.now), eight)
         self.assertIsNone(waker.slot(self.now - 2))
         self.assertIsNone(waker.slot(self.now + 300))
-        self.assertIsNone(waker.slot(noon - 1))
-        self.assertEqual(waker.slot(noon + 299), noon)
-        self.assertIsNone(waker.slot(seven + 20 * 3600 + 60))  # 03:01: none, so 07:00 stays fixed
-        self.assertEqual(waker.next_at(self.now), noon)
-        self.assertEqual(waker.next_at(self.now - 2), seven)
-        self.assertEqual(waker.next_at(noon), seven + 10 * 3600 + 120)  # 17:02
-        self.assertEqual(waker.next_at(seven + 10 * 3600 + 120), seven + 15 * 3600 + 180)  # 22:03
-        self.assertEqual(waker.next_at(seven + 15 * 3600 + 180), seven + 86400)  # after 22:03
+        self.assertIsNone(waker.slot(afternoon - 1))
+        self.assertEqual(waker.slot(afternoon + 299), afternoon)
+        self.assertIsNone(waker.slot(eight + 20 * 3600 + 60))  # 04:01: none, so 08:00 stays fixed
+        self.assertEqual(waker.next_at(self.now), afternoon)
+        self.assertEqual(waker.next_at(self.now - 2), eight)
+        self.assertEqual(waker.next_at(afternoon), eight + 10 * 3600 + 120)  # 18:02
+        self.assertEqual(waker.next_at(eight + 10 * 3600 + 120), eight + 15 * 3600 + 180)  # 23:03
+        self.assertEqual(waker.next_at(eight + 15 * 3600 + 180), eight + 86400)  # after 23:03
         with patch.object(waker, "command") as request:
             self.assertEqual(waker.wake(self.now + 3600), "outside_window")
             request.assert_not_called()
@@ -66,7 +66,7 @@ class WakerTests(unittest.TestCase):
             self.assertEqual(waker.wake(self.now), "sent")
             self.assertEqual(waker.wake(self.now + 60), "already_done")
             self.assertEqual(cli.call_count, 1)
-            self.assertEqual(waker.wake(self.now + 5 * 3600 + 60), "sent")  # 12:01 is a new run
+            self.assertEqual(waker.wake(self.now + 5 * 3600 + 60), "sent")  # 13:01 is a new run
         state = waker.status(self.now)["state"]
         self.assertIsNone(state["resets_at"])
         self.assertNotIn("sk-ant", json.dumps(waker.status(self.now)))
