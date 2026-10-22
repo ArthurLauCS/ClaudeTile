@@ -71,7 +71,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 | 内容 | 来源 |
 |---|---|
-| 会话状态 | `%USERPROFILE%\.claude\sessions\*.json`，Claude Code 自己写的 |
+| 会话状态 | `%USERPROFILE%\.claude\sessions\*.json`，Claude Code 自己写的；Orca 里起的会话在 `%APPDATA%\orca\claude-profiles\<账号档>\home\sessions\*.json` |
 | 会话标题、当前工具、Token | `%USERPROFILE%\.claude\projects` 里的对话记录 |
 | 桌面版会话标题 | `%APPDATA%\Claude\claude-code-sessions` |
 | 额度 | `https://api.anthropic.com/api/oauth/usage`，用 Claude Code 存在 `%USERPROFILE%\.claude\.credentials.json` 里的登录凭证 |

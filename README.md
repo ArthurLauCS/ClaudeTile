@@ -71,7 +71,7 @@ Session and token statistics only read Claude Code's local data. Explicit accoun
 
 | What | Source |
 |---|---|
-| Session state | `%USERPROFILE%\.claude\sessions\*.json`, written by Claude Code itself |
+| Session state | `%USERPROFILE%\.claude\sessions\*.json`, written by Claude Code itself; sessions started in Orca: `%APPDATA%\orca\claude-profiles\<profile>\home\sessions\*.json` |
 | Session titles, current tool, tokens | Conversation transcripts in `%USERPROFILE%\.claude\projects` |
 | Desktop app session titles | `%APPDATA%\Claude\claude-code-sessions` |
 | Usage limits | `https://api.anthropic.com/api/oauth/usage`, using the sign-in token Claude Code saved in `%USERPROFILE%\.claude\.credentials.json` |
