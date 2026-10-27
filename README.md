@@ -79,7 +79,7 @@ Session and token statistics only read Claude Code's local data. Explicit accoun
 
 - Usage is fetched about every 5 minutes, with no telemetry. It uses the proxy from your environment variables or from `env` in `~/.claude/settings.json`, the same one Claude Code uses. When a VPS is linked, the tile also reads its status over SSH every minute; the server uses its own fixed ISP proxy for wake-ups.
 - The usage endpoint is not a public API and may change. If it does, the tile and a notification tell you that ClaudeTile needs an update; sessions and token statistics keep working.
-- ClaudeTile never refreshes the sign-in token itself. When it expires, open Claude Code once and it refreshes.
+- ClaudeTile never refreshes the sign-in token itself. When an account's token expires, it runs `claude -p /usage` with that account in the background (a local command, no model call), which makes Claude Code refresh it; if it is still expired, it tries again 30 minutes later.
 - Claude Code deletes transcripts older than 30 days by default, so ClaudeTile keeps its own daily totals. The heatmap keeps your history beyond 30 days.
 
 ClaudeTile's own files are in `%APPDATA%\ClaudeTile`: `config.txt` (position, sizes, options) and `history.txt` (daily token totals). When uninstalling, you are asked whether to delete them; the default is to keep them.

@@ -77,6 +77,8 @@ enum Msg {
     Acct(PathBuf, Fetch),
     /// 打卡完成：账号目录（None = 当前账号）、成没成功
     Pinged(Option<PathBuf>, bool),
+    /// 刷新登录跑完：账号目录（None = 当前账号）
+    Refreshed(Option<PathBuf>),
     /// 添加账号的命令行窗口关了
     Login(PathBuf),
     Waker(std::result::Result<waker::Status, String>),
@@ -164,6 +166,9 @@ pub struct App {
     /// 当前账号正在打卡、下次可以打卡的时间
     pinging: bool,
     ping_at: i64,
+    /// 当前账号正在刷新登录、下次可以刷新的时间
+    refreshing: bool,
+    refresh_at: i64,
     /// 各账号（按邮箱）上次打卡成功的时间，不存盘
     pinged: HashMap<String, i64>,
 }
@@ -431,7 +436,7 @@ impl App {
             }
             match old.iter().position(|a| a.dir == dir) {
                 Some(i) => self.accounts.push(accounts::Account { email, ..old.swap_remove(i) }),
-                None => self.accounts.push(accounts::Account { dir, email, quota: Fetch::Err(String::new()), next_poll: 0, next_ping: 0, fetching: false, pinging: false }),
+                None => self.accounts.push(accounts::Account { dir, email, quota: Fetch::Err(String::new()), next_poll: 0, next_ping: 0, fetching: false, pinging: false, refreshing: false, next_refresh: 0 }),
             }
         }
         for i in 0..self.accounts.len() {
@@ -451,27 +456,59 @@ impl App {
         self.bg(move || Msg::Acct(dir.clone(), quota::fetch(&dir, proxy.as_deref(), fake.as_deref())));
     }
 
-    /// 打卡；dir 为 None 是当前账号
-    fn ping(&self, dir: Option<PathBuf>) {
-        let (exe, proxy) = (accounts::claude_exe(&home()), quota::proxy(&self.claude));
+    /// 后台跑 claude 用的程序、CLAUDE_CONFIG_DIR 和代理；dir 为 None 是当前账号
+    fn claude_cmd(&self, dir: &Option<PathBuf>) -> (PathBuf, Option<PathBuf>, Option<String>) {
         // 当前账号用默认目录时不设 CLAUDE_CONFIG_DIR，不然 Claude Code 会在 ~/.claude 里另起一份全局配置
         let d = dir.clone().or_else(|| (self.claude != home().join(".claude")).then(|| self.claude.clone()));
+        (accounts::claude_exe(&home()), d, quota::proxy(&self.claude))
+    }
+
+    /// 打卡；dir 为 None 是当前账号
+    fn ping(&self, dir: Option<PathBuf>) {
+        let (exe, d, proxy) = self.claude_cmd(&dir);
         self.bg(move || Msg::Pinged(dir, accounts::ping(&exe, d.as_deref(), proxy.as_deref())));
     }
 
-    /// 开着自动打卡时，5 小时窗口没在跑的账号各打一次卡
+    /// 刷新登录；dir 为 None 是当前账号
+    fn refresh(&self, dir: Option<PathBuf>) {
+        let (exe, d, proxy) = self.claude_cmd(&dir);
+        self.bg(move || {
+            accounts::refresh(&exe, d.as_deref(), proxy.as_deref());
+            Msg::Refreshed(dir)
+        });
+    }
+
+    /// 登录过期的账号各刷新一次登录，跑完马上重查额度；还是过期就 30 分钟后再试。
+    /// 平时用的 Claude Code 设了别的 CLAUDE_CONFIG_DIR（比如 Orca）时，~/.claude 和其他账号的 token 没人刷新，8 小时就过期
+    fn auto_refresh(&mut self) {
+        let now = time::now();
+        if !self.refreshing && !self.pinging && now >= self.refresh_at && matches!(self.quota, Fetch::Expired) {
+            (self.refreshing, self.refresh_at) = (true, now + 1800);
+            self.refresh(None);
+        }
+        for i in 0..self.accounts.len() {
+            let a = &mut self.accounts[i];
+            if !a.refreshing && !a.pinging && now >= a.next_refresh && matches!(a.quota, Fetch::Expired) {
+                (a.refreshing, a.next_refresh) = (true, now + 1800);
+                let d = a.dir.clone();
+                self.refresh(Some(d));
+            }
+        }
+    }
+
+    /// 开着自动打卡时，5 小时窗口没在跑的账号各打一次卡（正在刷新登录的等它跑完）
     fn auto_ping(&mut self) {
         let now = time::now();
         if !self.cfg.ping || waker::linked(&self.data) {
             return;
         }
-        if !self.pinging && now >= self.ping_at && accounts::idle(&self.quota, now) {
+        if !self.pinging && !self.refreshing && now >= self.ping_at && accounts::idle(&self.quota, now) {
             self.pinging = true;
             self.ping(None);
         }
         for i in 0..self.accounts.len() {
             let a = &mut self.accounts[i];
-            if !a.pinging && now >= a.next_ping && accounts::idle(&a.quota, now) {
+            if !a.pinging && !a.refreshing && now >= a.next_ping && accounts::idle(&a.quota, now) {
                 a.pinging = true;
                 let d = a.dir.clone();
                 self.ping(Some(d));
@@ -480,8 +517,8 @@ impl App {
     }
 
     fn switch_to(&mut self, i: usize) {
-        // 打卡的 claude 进程可能正在刷新凭证，等它跑完再切
-        let busy = self.pinging || self.accounts.iter().any(|a| a.pinging);
+        // 打卡、刷新登录的 claude 进程可能正在刷新凭证，等它跑完再切
+        let busy = self.pinging || self.refreshing || self.accounts.iter().any(|a| a.pinging || a.refreshing);
         if busy || accounts::switch(&self.claude, &self.global, &self.data.join("accounts"), &self.accounts[i].dir).is_err() {
             unsafe { MessageBeep(MB_ICONWARNING).ok() };
             return;
@@ -490,7 +527,7 @@ impl App {
         let (old_email, q) = (self.email.clone(), std::mem::replace(&mut self.accounts[i].quota, Fetch::Err(String::new())));
         let old = std::mem::replace(&mut self.quota, q);
         self.quota_at = if matches!(self.quota, Fetch::Ok(_)) { time::now() } else { 0 };
-        (self.stale, self.ping_at, self.samples_reset) = (false, 0, None);
+        (self.stale, self.ping_at, self.refresh_at, self.samples_reset) = (false, 0, 0, None);
         self.samples.clear();
         self.plan = quota::creds(&self.claude).map(|c| c.plan).unwrap_or_default();
         self.reload_accounts();
@@ -546,6 +583,7 @@ impl App {
         }
         // 在 Claude Code 里 /login 换了账号也跟上
         self.reload_accounts();
+        self.auto_refresh();
         self.auto_ping();
         self.update_tray();
         self.invalidate();
@@ -841,6 +879,7 @@ impl App {
                         if !matches!((&q, &a.quota), (Fetch::Err(_), Fetch::Ok(_))) {
                             a.quota = q;
                         }
+                        self.auto_refresh();
                         self.auto_ping();
                         self.invalidate();
                     }
@@ -869,6 +908,18 @@ impl App {
                         }
                     }
                 }
+                Msg::Refreshed(dir) => match dir {
+                    None => {
+                        self.refreshing = false;
+                        self.fetch_quota();
+                    }
+                    Some(d) => {
+                        if let Some(i) = self.accounts.iter().position(|a| a.dir == d) {
+                            self.accounts[i].refreshing = false;
+                            self.fetch_acct(i);
+                        }
+                    }
+                },
                 Msg::Login(dir) => {
                     // 没登录成功、或登的是当前账号就删掉这个目录；登的是列表里已有的账号就换掉旧目录
                     let e = dir.join(".credentials.json").is_file().then(|| accounts::email(&dir.join(".claude.json"))).flatten();
@@ -1332,6 +1383,8 @@ fn main() {
             accounts: Vec::new(),
             pinging: false,
             ping_at: 0,
+            refreshing: false,
+            refresh_at: 0,
             pinged: HashMap::new(),
         });
         APP = &mut *a;

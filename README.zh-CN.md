@@ -79,7 +79,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 - 额度查询约 5 分钟一次，没有统计上报。代理用环境变量或 `~/.claude/settings.json` 里 `env` 配的那个，和 Claude Code 一致。连接 VPS 后另以 SSH 每分钟读取任务状态；服务器的唤醒请求走独立配置的固定 ISP。
 - 额度接口不是公开 API，可能会变。变了的话，磁贴和提示会告诉你需要更新 ClaudeTile，会话和 Token 统计照常工作。
-- ClaudeTile 不会自己刷新登录凭证。过期后打开一次 Claude Code 就会刷新。
+- ClaudeTile 不会自己刷新登录凭证。某个账号的登录过期时，磁贴在后台用这个账号跑一次 `claude -p /usage`（本地命令，不调模型），让 Claude Code 刷新；还是过期就 30 分钟后再试。
 - Claude Code 默认删除 30 天前的对话记录，所以 ClaudeTile 另存一份每日合计，热力图能保留 30 天以前的历史。
 
 ClaudeTile 自己的文件在 `%APPDATA%\ClaudeTile`：`config.txt`（位置、尺寸、选项）和 `history.txt`（每日 Token 合计）。卸载时会问要不要删除它们，默认保留。
