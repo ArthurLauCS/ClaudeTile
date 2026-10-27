@@ -6,6 +6,8 @@
 //! 当前账号的 token 由 Claude Code 刷新，它的目录里那份可能是旧的，所以列表里不显示当前账号的目录。
 //!
 //! 打卡：5 小时窗口没在跑时，用这个账号发一条最小的消息（haiku、不带工具和配置，约 3k token），窗口在人不在时就开始计时。
+//!
+//! 刷新登录：登录过期时用这个账号跑一次 /usage（本地命令，不调模型），Claude Code 会先刷新 token 再查额度。
 
 use std::io::Write;
 use std::os::windows::process::CommandExt;
@@ -29,6 +31,9 @@ pub struct Account {
     pub next_ping: i64,
     pub fetching: bool,
     pub pinging: bool,
+    /// 正在刷新登录、下次可以刷新的时间
+    pub refreshing: bool,
+    pub next_refresh: i64,
 }
 
 /// Claude Code 的全局配置：用默认目录时在 ~/.claude.json，设了 CLAUDE_CONFIG_DIR 时在那个目录里
@@ -77,9 +82,10 @@ pub fn switch(claude: &Path, global: &Path, root: &Path, to: &Path) -> std::io::
     set_oauth(global, new)
 }
 
+/// 原生安装在 ~/.local/bin；npm 安装时 PATH 里只有 claude.cmd，Command 找不到，要用包里的 claude.exe
 pub fn claude_exe(home: &Path) -> PathBuf {
-    let p = home.join(".local").join("bin").join("claude.exe");
-    if p.is_file() { p } else { "claude".into() }
+    let npm = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join(r"npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"));
+    [Some(home.join(".local").join("bin").join("claude.exe")), npm].into_iter().flatten().find(|p| p.is_file()).unwrap_or_else(|| "claude".into())
 }
 
 /// 子进程的环境：dir 为 None 用默认目录（当前账号），代理照 ~/.claude/settings.json 给（账号目录里没有 settings.json）
@@ -102,18 +108,28 @@ pub fn idle(q: &Fetch, now: i64) -> bool {
     }
 }
 
-/// 打卡，返回成没成功。阻塞，最多 5 分钟，在后台线程里跑
+/// 打卡，返回成没成功
 pub fn ping(exe: &Path, dir: Option<&Path>, proxy: Option<&str>) -> bool {
+    run(exe, dir, proxy, b"hi")
+}
+
+/// 刷新登录。跑完是否还过期由调用方重查额度判断
+pub fn refresh(exe: &Path, dir: Option<&Path>, proxy: Option<&str>) {
+    run(exe, dir, proxy, b"/usage");
+}
+
+/// 用这个账号跑一次 claude -p，input 从 stdin 给，返回成没成功。阻塞，最多 5 分钟，在后台线程里跑
+fn run(exe: &Path, dir: Option<&Path>, proxy: Option<&str>, input: &[u8]) -> bool {
     let work = std::env::temp_dir().join("claude-ping");
     let _ = std::fs::create_dir_all(&work);
     let mut c = Command::new(exe);
-    // --safe-mode 不加载 CLAUDE.md / skills / 插件 / hooks / MCP，加上不带工具和极短的系统提示，约 3k token
+    // --safe-mode 不加载 CLAUDE.md / skills / 插件 / hooks / MCP，加上不带工具和极短的系统提示，打卡约 3k token
     c.args(["-p", "--model", "haiku", "--effort", "low", "--safe-mode", "--no-session-persistence", "--tools", "", "--system-prompt", "Reply ok."]);
     c.current_dir(&work).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW.0);
     env(&mut c, dir, proxy);
     let Ok(mut ch) = c.spawn() else { return false };
     if let Some(mut i) = ch.stdin.take() {
-        let _ = i.write_all(b"hi");
+        let _ = i.write_all(input);
     }
     for _ in 0..300 {
         if let Ok(Some(s)) = ch.try_wait() {

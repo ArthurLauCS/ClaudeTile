@@ -1,7 +1,7 @@
 //! 5 小时 / 每周额度：用 Claude Code 登录时存的 OAuth token（~/.claude/.credentials.json）调
 //! api.anthropic.com/api/oauth/usage。这是非公开接口，字段可能变；拿不到就显示原因，不影响其他功能。
 //!
-//! token 过期由 Claude Code 自己刷新（它会改写凭证文件），这里每次请求前重新读文件，不自己刷新：
+//! token 过期由 Claude Code 自己刷新（它会改写凭证文件；过期时磁贴在后台跑一次 claude，见 accounts::refresh），这里每次请求前重新读文件，不自己刷新：
 //! 刷新会换掉 refresh token，和正在运行的 Claude Code 抢着写凭证文件。
 //!
 //! 代理：先看环境变量，再看 ~/.claude/settings.json 的 env（Claude Code 走的就是它），都没有才用系统代理。

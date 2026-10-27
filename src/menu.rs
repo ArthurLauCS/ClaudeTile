@@ -23,7 +23,10 @@ pub const MENU_CLASS: PCWSTR = w!("ClaudeTileMenu");
 const W: f32 = 272.0;
 const ROW: f32 = 34.0;
 const EDGE: f32 = 6.0;
+/// 内容左右边：文字、开关、分段条、分隔线、滑块（连同圆钮）都在 X 和 W - X 之间
 const X: f32 = 14.0;
+/// 滑块圆钮的半径：圆钮中心只走到离两边 THUMB 处，拉满也不出内容边
+const THUMB: f32 = 10.0;
 pub const OPACITY_MIN: u32 = 20;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -134,7 +137,7 @@ pub fn show(a: &mut App, pt: POINT) {
         // WS_THICKFRAME 只为了要系统阴影，边框由 WM_NCCALCSIZE 去掉
         // Owned popups stay above their owner when its topmost state changes.
         let Ok(hwnd) = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, MENU_CLASS, w!("ClaudeTile menu"), WS_POPUP | WS_THICKFRAME, x, y, w, h, Some(a.hwnd), None, None, None) else { return };
-        let dark = BOOL::from(a.sys_dark);
+        let dark = BOOL::from(a.theme.dark);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
         let corner = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
@@ -165,7 +168,8 @@ fn draw(a: &App, m: &mut Menu) {
         if a.gfx.bind(&surf, dpi).is_err() {
             return;
         }
-        let th = Theme::panel(a.sys_dark);
+        // 跟磁贴实际用的深浅色走（透明度低于 50% 时磁贴强制深色）
+        let th = Theme::panel(a.theme.dark);
         let f = &a.fonts;
         let p = P { dc: &a.gfx.dc, br: &a.gfx.brush, dw: &a.dw, shadow: false };
         let w = rc.right as f32 * 96.0 / dpi;
@@ -182,14 +186,14 @@ fn draw(a: &App, m: &mut Menu) {
                     let v = a.cfg.opacity;
                     p.text(tr("磁贴透明度", "Tile opacity"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12, th.text, Align::L);
                     p.text(&format!("{v}%"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12b, th.muted, Align::R);
-                    let (l, r, cy) = (X + 8.0, w - X - 8.0, y + 42.0);
+                    let (l, r, cy) = (X + THUMB, w - X - THUMB, y + 42.0);
                     let x = l + (r - l) * (v - OPACITY_MIN) as f32 / (100 - OPACITY_MIN) as f32;
-                    p.fill(rect(l, cy - 2.0, r, cy + 2.0), 2.0, th.track);
-                    p.fill(rect(l, cy - 2.0, x, cy + 2.0), 2.0, th.accent);
-                    // 和 Win11 滑块一样：外圈底色加细边，中间一颗强调色圆点，悬停或拖动时变大
-                    p.dot(x, cy, 10.0, th.tint);
+                    p.fill(rect(X, cy - 2.0, w - X, cy + 2.0), 2.0, th.track);
+                    p.fill(rect(X, cy - 2.0, x, cy + 2.0), 2.0, th.accent);
+                    // 和 Win11 滑块一样：外圈底色加细边，中间一颗强调色圆点，悬停或拖动时变大。细边画在圆钮里面
+                    p.dot(x, cy, THUMB, th.tint);
                     p.color(th.track);
-                    a.gfx.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x, Y: cy }, radiusX: 10.0, radiusY: 10.0 }, &a.gfx.brush, 1.0, None);
+                    a.gfx.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x, Y: cy }, radiusX: THUMB - 0.5, radiusY: THUMB - 0.5 }, &a.gfx.brush, 1.0, None);
                     p.dot(x, cy, if m.sliding || hot(Id::Opacity) { 7.0 } else { 5.5 }, th.accent);
                     hits.push((rect(X - 4.0, y + 28.0, w - X + 4.0, y + 56.0), Id::Opacity));
                 }
@@ -212,7 +216,7 @@ fn draw(a: &App, m: &mut Menu) {
                 }
                 Row::Seg(label, opts) => {
                     p.text(label, rect(X, y + 2.0, w - X, y + 22.0), &f.f11, th.muted, Align::L);
-                    let bar = rect(X - 2.0, y + 24.0, w - X + 2.0, y + 52.0);
+                    let bar = rect(X, y + 24.0, w - X, y + 52.0);
                     p.fill(bar, 6.0, th.faint);
                     let sw = (bar.right - bar.left - 4.0) / opts.len() as f32;
                     for (k, (id, text, on)) in opts.into_iter().enumerate() {
@@ -237,11 +241,12 @@ fn draw(a: &App, m: &mut Menu) {
                         p.fill(r, 5.0, if danger { with_a(th.danger, 0.16) } else { th.hover });
                     }
                     let c = if danger { th.danger } else { th.text };
-                    p.text(glyph, rect(X, y, X + 20.0, y + rh), &f.icon, if danger { th.danger } else { th.muted }, Align::C);
+                    // 图标笔画左边和开关行的文字左边对齐
+                    p.ink(glyph, rect(X, y, X + 20.0, y + rh), &f.icon, if danger { th.danger } else { th.muted }, Align::L);
                     p.text(label, rect(X + 30.0, y, w - X, y + rh), &f.f12, c, Align::L);
                     hits.push((r, id));
                 }
-                Row::Sep => p.fill(rect(X - 2.0, y + 4.0, w - X + 2.0, y + 5.0), 0.0, th.faint),
+                Row::Sep => p.fill(rect(X, y + 4.0, w - X, y + 5.0), 0.0, th.track),
             }
             y += rh;
         }
@@ -261,7 +266,7 @@ fn hit(m: &Menu, lp: LPARAM) -> Option<Id> {
 fn slide(a: &mut App, m: &Menu, lp: LPARAM) {
     let s = unsafe { GetDpiForWindow(m.hwnd) } as f32 / 96.0;
     let x = (lp.0 as i16) as f32 / s;
-    let (l, r) = (X + 8.0, W - X - 8.0);
+    let (l, r) = (X + THUMB, W - X - THUMB);
     let t = ((x - l) / (r - l)).clamp(0.0, 1.0);
     let v = OPACITY_MIN + ((t * (100 - OPACITY_MIN) as f32 / 5.0).round() as u32) * 5;
     if v != a.cfg.opacity {

@@ -14,7 +14,7 @@ use crate::usage::{self, fmt_tokens};
 use crate::{App, time};
 
 pub const PAD: f32 = 16.0;
-const GAP: f32 = 14.0;
+const GAP: f32 = 12.0;
 const CELL: f32 = 11.0;
 const STEP: f32 = 14.0;
 const DAY_LABEL_W: f32 = 30.0;
@@ -23,8 +23,15 @@ pub const MIN_W: f32 = 300.0;
 const SPLIT: f32 = 16.0;
 const BOTTOM: f32 = 12.0;
 pub const MIN_BOX: f32 = 40.0;
-/// 账号卡之间的间距（含高亮底色上下各多出的 4）
+/// 分隔线在空隙里的位置：每段内容最后一行字下面带着 2 的行距，下一段的标题紧贴段顶，线比正中往上 1，上下留白才一样
+const RULE: f32 = SPLIT / 2.0 - 1.0;
+/// 账号卡之间的间距（含高亮底色上下多出的部分）
 const CARD_GAP: f32 = 12.0;
+/// 账号卡高亮、会话行悬停的底色比内容左右各宽出多少
+const HOVER_OUT: f32 = 8.0;
+/// 账号、会话行首的状态圆点半径（左边贴着内容左边）和行首文字的缩进
+const DOT: f32 = 4.0;
+const INDENT: f32 = 16.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hit {
@@ -88,8 +95,8 @@ impl Theme {
             faint: g(if dark { 0.09 } else { 0.08 }),
             track: g(if dark { 0.14 } else { 0.12 }),
             hover: g(0.07),
-            // Claude 的陶土橙；浅色背景上压暗一点保证对比度
-            accent: if dark { rgba(0.851, 0.467, 0.341, 1.0) } else { rgba(0.776, 0.380, 0.255, 1.0) },
+            // 图标的陶土橙；浅色背景上压暗一点保证对比度
+            accent: if dark { rgba(0.851, 0.467, 0.341, 1.0) } else { rgba(0.690, 0.325, 0.227, 1.0) },
             warn: if dark { rgba(0.957, 0.702, 0.251, 1.0) } else { rgba(0.722, 0.475, 0.0, 1.0) },
             danger: if dark { rgba(0.957, 0.392, 0.341, 1.0) } else { rgba(0.769, 0.169, 0.110, 1.0) },
             ok: if dark { rgba(0.412, 0.812, 0.533, 1.0) } else { rgba(0.110, 0.553, 0.255, 1.0) },
@@ -266,20 +273,67 @@ impl P<'_> {
 
     /// 在 r 里画一行字，返回文字实际宽度
     pub fn text(&self, s: &str, r: D2D_RECT_F, f: &IDWriteTextFormat, c: D2D1_COLOR_F, al: Align) -> f32 {
-        let w: Vec<u16> = s.encode_utf16().collect();
+        self.draw_text(s, r, f, c, al, false, false)
+    }
+
+    /// 和 text 一样，但左右按笔画对齐：L / R 让笔画的左 / 右边贴着 r 的左 / 右边，C 让笔画居中。
+    /// 字形两边自带留白，图标字体里各个图标的留白还不一样，按字框对齐会差一两像素
+    pub fn ink(&self, s: &str, r: D2D_RECT_F, f: &IDWriteTextFormat, c: D2D1_COLOR_F, al: Align) -> f32 {
+        self.draw_text(s, r, f, c, al, true, false)
+    }
+
+    /// 和 text 一样，但数字等宽：位数相同的时间各行一样宽，列才对得齐
+    pub fn num(&self, s: &str, r: D2D_RECT_F, f: &IDWriteTextFormat, c: D2D1_COLOR_F, al: Align) -> f32 {
+        self.draw_text(s, r, f, c, al, false, true)
+    }
+
+    /// 用 num 右对齐画这行字时，笔画左边离 r 的右边多远（不画）
+    pub fn width(&self, s: &str, f: &IDWriteTextFormat) -> f32 {
+        let Some(l) = self.layout(s, f, 1000.0, 100.0, true) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        // 笔画伸出排版框为正、缩进为负
+        let o = unsafe {
+            let _ = l.GetMetrics(&mut m);
+            l.GetOverhangMetrics().unwrap_or_default()
+        };
+        m.width + o.left
+    }
+
+    /// 排一行字；num 时数字等宽（Segoe UI Variable 的数字默认不等宽，“1” 比别的窄）
+    fn layout(&self, s: &str, f: &IDWriteTextFormat, w: f32, h: f32, num: bool) -> Option<IDWriteTextLayout> {
+        let s: Vec<u16> = s.encode_utf16().collect();
         unsafe {
-            let Ok(l) = self.dw.CreateTextLayout(&w, f, (r.right - r.left).max(1.0), (r.bottom - r.top).max(1.0)) else { return 0.0 };
+            let l = self.dw.CreateTextLayout(&s, f, w.max(1.0), h.max(1.0)).ok()?;
+            if num {
+                let t = self.dw.CreateTypography().ok()?;
+                let _ = t.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 });
+                let _ = l.SetTypography(&t, DWRITE_TEXT_RANGE { startPosition: 0, length: s.len() as u32 });
+            }
+            Some(l)
+        }
+    }
+
+    fn draw_text(&self, s: &str, r: D2D_RECT_F, f: &IDWriteTextFormat, c: D2D1_COLOR_F, al: Align, ink: bool, num: bool) -> f32 {
+        let Some(l) = self.layout(s, f, r.right - r.left, r.bottom - r.top, num) else { return 0.0 };
+        unsafe {
             let _ = l.SetTextAlignment(match al {
                 Align::L => DWRITE_TEXT_ALIGNMENT_LEADING,
                 Align::C => DWRITE_TEXT_ALIGNMENT_CENTER,
                 Align::R => DWRITE_TEXT_ALIGNMENT_TRAILING,
             });
+            // 笔画伸出（正）或缩进（负）排版框左右边多少
+            let o = if ink { l.GetOverhangMetrics().unwrap_or_default() } else { DWRITE_OVERHANG_METRICS::default() };
+            let x = r.left + match al {
+                Align::L => o.left,
+                Align::C => (o.left - o.right) / 2.0,
+                Align::R => -o.right,
+            };
             if self.shadow {
                 self.color(rgba(0.0, 0.0, 0.0, 0.55 * c.a));
-                self.dc.DrawTextLayout(Vector2 { X: r.left + 1.0, Y: r.top + 1.0 }, &l, self.br, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                self.dc.DrawTextLayout(Vector2 { X: x + 1.0, Y: r.top + 1.0 }, &l, self.br, D2D1_DRAW_TEXT_OPTIONS_NONE);
             }
             self.color(c);
-            self.dc.DrawTextLayout(Vector2 { X: r.left, Y: r.top }, &l, self.br, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            self.dc.DrawTextLayout(Vector2 { X: x, Y: r.top }, &l, self.br, D2D1_DRAW_TEXT_OPTIONS_NONE);
             let mut m = DWRITE_TEXT_METRICS::default();
             let _ = l.GetMetrics(&mut m);
             m.width
@@ -330,15 +384,16 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
 
     let mut y = 10.0;
     p.text("Claude", rect(l, y, r, y + 24.0), &f.f14b, th.text, Align::L);
-    let pin = rect(r - 24.0, y, r + 4.0, y + 24.0);
+    // 图钉笔画的右边和右对齐的字对齐（图标 14 宽），悬停底色以图标为中心
+    let pin = rect(r - 21.0, y, r + 7.0, y + 24.0);
     if a.hover == Some(Hit::Pin) { p.fill(pin, 5.0, th.hover); }
-    p.text(if a.cfg.topmost { "\u{E840}" } else { "\u{E718}" }, pin, &f.icon, if a.cfg.topmost { th.accent } else { th.muted }, Align::C);
+    p.ink(if a.cfg.topmost { "\u{E840}" } else { "\u{E718}" }, rect(pin.left, y, r, y + 24.0), &f.icon, if a.cfg.topmost { th.accent } else { th.muted }, Align::R);
     hits.push((pin, Hit::Pin));
     let zone = match a.cfg.tz { 1 => tr("本机时间", "Local time"), 2 => "UTC", _ => tr("北京时间", "Beijing time") };
     p.text(zone, rect(l + 80.0, y, r - 32.0, y + 24.0), &f.f11, th.muted, Align::R);
     y += 30.0;
     y = service_rows(&p, a, w, y, &mut hits);
-    p.fill(rect(l, y + 7.0, r, y + 8.0), 0.0, th.faint);
+    p.fill(rect(l, y + RULE, r, y + RULE + 1.0), 0.0, th.faint);
     y += SPLIT;
 
     // 三个框：额度、会话、Token。各自裁剪、可滚动，框下方的空隙可以拖动改框高
@@ -385,11 +440,11 @@ pub fn draw(a: &App, w: f32, h: f32, max_h: f32) -> Frame {
         y = top + hgt;
         // 框下方的拖动条：悬停或拖动时显出一道短横线
         let gap = SPLIT;
-        p.fill(rect(l, y + gap / 2.0, r, y + gap / 2.0 + 1.0), 0.0, th.faint);
+        p.fill(rect(l, y + RULE, r, y + RULE + 1.0), 0.0, th.faint);
         let zone = rect(0.0, y, w, y + gap);
         if a.hover == Some(Hit::Split(i)) || a.dragging == Some(i) {
             let c = w / 2.0;
-            p.fill(rect(c - 18.0, y + gap / 2.0 - 1.5, c + 18.0, y + gap / 2.0 + 1.5), 1.5, th.muted);
+            p.fill(rect(c - 18.0, y + RULE - 1.0, c + 18.0, y + RULE + 2.0), 1.5, th.muted);
         }
         hits.push((zone, Hit::Split(i)));
         y += gap;
@@ -464,8 +519,8 @@ fn account_rows(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f3
         let note = if remote.result == "ok" { "" } else { remote.note() };
         y = account_card(p, a, w, y, &remote.email, &remote.plan, &format!("VPS …{}", remote.tail), &q, note, Hit::Remote, hits);
     }
-    // 最后一张卡的底色比内容多出 4
-    (y - CARD_GAP + 4.0).max(18.0)
+    // 最后一张卡的底色比内容多出 3
+    (y - CARD_GAP + 3.0).max(18.0)
 }
 
 /// 一张账号卡：邮箱一行（右边是等级和来源），5 小时和周额度各一行（进度条夹在百分比和重置时间之间）。
@@ -482,28 +537,33 @@ fn account_card(p: &P, a: &App, w: f32, mut y: f32, email: &str, plan: &str, sou
             _ => "",
         }
     };
-    let bg = rect(l - 6.0, y - 4.0, r + 6.0, y + if status.is_empty() { 58.0 } else { 76.0 });
+    // 底色上下离字和会话行悬停一样远：上面比邮箱行框高 2；最后一行是 16 高的行框，字离框底比 18 高的行框近 1，下面多出 3
+    let bg = rect(l - HOVER_OUT, y - 2.0, r + HOVER_OUT, y + if status.is_empty() { 57.0 } else { 75.0 });
     let alpha = match (current, a.hover == Some(hit)) { (true, true) => 0.22, (true, false) => 0.14, (false, true) => 0.07, _ => 0.0 };
     if alpha > 0.0 { p.fill(bg, 5.0, with_a(th.accent, alpha)); }
     hits.push((bg, hit));
-    if current { p.dot(l + 3.0, y + 9.0, 3.0, th.accent); }
+    // 圆点和邮箱的位置和会话列表的状态点、标题一样
+    if current { p.dot(l + DOT, y + 9.0, DOT, th.accent); }
     let tag = p.text(if current { tr("当前账号", "Current") } else { source }, rect(l, y, r, y + 18.0), &f.f11, if current { th.accent } else { th.muted }, Align::R);
     let plan_w = if plan.is_empty() { 0.0 } else { p.text(plan, rect(l, y, r - tag - 8.0, y + 18.0), &f.f11, th.muted, Align::R) + 8.0 };
-    p.text(if email.is_empty() { tr("邮箱未获取", "Email unavailable") } else { email }, rect(l + 14.0, y, r - tag - plan_w - 8.0, y + 18.0), &f.f12b, th.text, Align::L);
+    p.text(if email.is_empty() { tr("邮箱未获取", "Email unavailable") } else { email }, rect(l + INDENT, y, r - tag - plan_w - 8.0, y + 18.0), &f.f12b, th.text, Align::L);
     y += 20.0;
-    // 列宽固定，两行的进度条才对齐
-    let (bar_l, bar_r) = (l + 82.0, r - 104.0);
+    // 列固定，各行、各张卡的进度条才对齐：重置时间那列按 “MM-DD HH:MM” 量（画成等宽数字），进度条两头和两边的字的笔画隔开一样宽
+    let reset_w = p.width(&format!("{} 00-00 00:00", tr("重置", "Resets")), &f.f11);
+    let (bar_l, bar_r) = (l + 82.0, r - reset_w - 6.0);
     for (kind, label) in [(Kind::Session, tr("5 小时", "5-hour")), (Kind::Week, tr("周额度", "Weekly"))] {
         let window = match quota { Fetch::Ok(ws) => ws.iter().find(|wd| wd.kind == kind), _ => None };
         let percent = window.map(|wd| format!("{:.0}%", wd.pct.clamp(0.0, 100.0))).unwrap_or_else(|| "—".into());
         let reset = window.and_then(|wd| wd.resets).map(|t| time::stamp(t, a.cfg.tz)).unwrap_or_else(|| "—".into());
         p.text(label, rect(l, y, l + 44.0, y + 16.0), &f.f11, th.muted, Align::L);
-        p.text(&percent, rect(l + 44.0, y, bar_l - 6.0, y + 16.0), &f.f11, window.map(|wd| th.level(wd.pct)).unwrap_or(th.muted), Align::R);
-        p.fill(rect(bar_l, y + 6.0, bar_r, y + 10.0), 2.0, th.track);
+        p.ink(&percent, rect(l + 44.0, y, bar_l - 6.0, y + 16.0), &f.f11, window.map(|wd| th.level(wd.pct)).unwrap_or(th.muted), Align::R);
+        // 数字笔画的中线比行框中线低 1，进度条跟着笔画居中
+        p.fill(rect(bar_l, y + 7.0, bar_r, y + 11.0), 2.0, th.track);
         if let Some(wd) = window.filter(|wd| wd.pct > 0.0) {
-            p.fill(rect(bar_l, y + 6.0, bar_l + (bar_r - bar_l) * wd.pct.clamp(0.0, 100.0) as f32 / 100.0, y + 10.0), 2.0, th.level(wd.pct));
+            p.fill(rect(bar_l, y + 7.0, bar_l + (bar_r - bar_l) * wd.pct.clamp(0.0, 100.0) as f32 / 100.0, y + 11.0), 2.0, th.level(wd.pct));
         }
-        p.text(&format!("{} {reset}", tr("重置", "Resets")), rect(bar_r + 8.0, y, r, y + 16.0), &f.f11, th.muted, Align::R);
+        // 框从进度条右端起，比字宽一点，右对齐的字才不会被截成省略号
+        p.num(&format!("{} {reset}", tr("重置", "Resets")), rect(bar_r, y, r, y + 16.0), &f.f11, th.muted, Align::R);
         y += 18.0;
     }
     if !status.is_empty() {
@@ -535,9 +595,9 @@ fn session_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit
         y += 18.0;
     }
     for s in &a.sessions {
-        let row = rect(l - 8.0, y, r + 8.0, y + 40.0);
+        let row = rect(l - HOVER_OUT, y, r + HOVER_OUT, y + 40.0);
         if a.hover == Some(Hit::Session(s.pid)) {
-            p.fill(row, 6.0, th.hover);
+            p.fill(row, 5.0, th.hover);
         }
         hits.push((row, Hit::Session(s.pid)));
         let info = a.info.get(&s.id);
@@ -547,10 +607,10 @@ fn session_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit
             State::Busy => (th.ok, if en() { format!("Running · {}", fmt_dur(now - s.since)) } else { format!("运行中 · {}", fmt_dur(now - s.since)) }),
             State::Idle => (th.muted, if en() { format!("Idle · {}", fmt_dur(now - s.since)) } else { format!("空闲 · {}", fmt_dur(now - s.since)) }),
         };
-        p.dot(l + 4.0, y + 11.0, 4.0, color);
+        p.dot(l + DOT, y + 11.0, DOT, color);
         let idle = s.state == State::Idle;
         let sw = p.text(&state, rect(l + 120.0, y + 2.0, r, y + 20.0), &f.f11, if idle { th.muted } else { color }, Align::R);
-        p.text(&title, rect(l + 16.0, y + 2.0, r - sw - 10.0, y + 20.0), &f.f12b, if idle { th.muted } else { th.text }, Align::L);
+        p.text(&title, rect(l + INDENT, y + 2.0, r - sw - 10.0, y + 20.0), &f.f12b, if idle { th.muted } else { th.text }, Align::L);
         let mut sub = String::new();
         if s.desktop {
             sub += tr("桌面版 · ", "Desktop · ");
@@ -560,7 +620,7 @@ fn session_box(p: &P, a: &App, w: f32, now: i64, hits: &mut Vec<(D2D_RECT_F, Hit
             sub += " · ";
             sub += t;
         }
-        p.text(&sub, rect(l + 16.0, y + 20.0, r, y + 38.0), &f.f11, th.muted, Align::L);
+        p.text(&sub, rect(l + INDENT, y + 20.0, r, y + 38.0), &f.f11, th.muted, Align::L);
         y += 40.0;
     }
     y
@@ -577,28 +637,33 @@ fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32
     let mut y = 0.0;
     let today = time::today();
     let weeks = (((r - l - DAY_LABEL_W) + (STEP - CELL)) / STEP).floor().max(4.0) as i32;
+    let gx = l + DAY_LABEL_W;
+    // 每列的左边：周数取整后除不尽的余量分进列间隙，最后一列正好收在右边；取整到像素，格子边缘不发虚
+    let col = |c: i32| (gx + c as f32 * (r - gx - CELL) / (weeks - 1) as f32).round();
     let start = monday(today) - (weeks - 1) * 7;
     let cr = a.cfg.cache_read;
-    let tw = p.text("Token", rect(l, y, r, y + 20.0), &f.f12b, th.text, Align::L);
-    // 含不含缓存读取的滑动开关，在日 / 周切换左边
-    let close = rect(r - 20.0, y, r, y + 20.0);
-    p.text("×", close, &f.f12, th.muted, Align::C);
+    // 标题行和其他框的标题一样高
+    let tw = p.text("Token", rect(l, y, r, y + 18.0), &f.f12b, th.text, Align::L);
+    // 关闭的叉：E711 笔画约 10 宽，和图钉的线一样粗；跟着这行字的笔画居中（比行框中线低 1）
+    let close = rect(r - 20.0, y + 1.0, r, y + 19.0);
+    p.ink("\u{E711}", close, &f.icon, th.muted, Align::R);
     hits.push((close, Hit::Heatmap));
+    // 含不含缓存读取的滑动开关，在日 / 周切换左边
     let sx = r - 88.0 - 10.0 - 26.0;
-    let lw = p.text(tr("缓存", "Cache"), rect(l, y + 1.0, sx - 5.0, y + 20.0), &f.f11, th.muted, Align::R);
-    let sb = rect(sx - 5.0 - lw - 4.0, y, sx + 26.0 + 4.0, y + 20.0);
+    let lw = p.text(tr("缓存", "Cache"), rect(l, y + 1.0, sx - 5.0, y + 18.0), &f.f11, th.muted, Align::R);
+    let sb = rect(sx - 5.0 - lw - 4.0, y, sx + 26.0 + 4.0, y + 18.0);
     if a.hover == Some(Hit::Cache) {
         p.fill(sb, 5.0, th.hover);
     }
-    p.fill(rect(sx, y + 3.0, sx + 26.0, y + 17.0), 7.0, if cr { th.accent } else { th.track });
-    p.dot(if cr { sx + 19.0 } else { sx + 7.0 }, y + 10.0, 5.0, if cr { rgba(1.0, 1.0, 1.0, 1.0) } else { th.muted });
+    p.fill(rect(sx, y + 2.0, sx + 26.0, y + 16.0), 7.0, if cr { th.accent } else { th.track });
+    p.dot(if cr { sx + 19.0 } else { sx + 7.0 }, y + 9.0, 5.0, if cr { rgba(1.0, 1.0, 1.0, 1.0) } else { th.muted });
     hits.push((sb, Hit::Cache));
     let sum: u64 = (start..=today).map(|d| usage::day_total(&a.days, d, cr)).sum();
     let span = if en() { format!("{weeks} weeks · {}", fmt_tokens(sum)) } else { format!("近 {weeks} 周 · {}", fmt_tokens(sum)) };
-    p.text(&span, rect(l + tw + 8.0, y + 1.0, sb.left - 4.0, y + 20.0), &f.f11, th.muted, Align::L);
+    p.text(&span, rect(l + tw + 8.0, y + 1.0, sb.left - 4.0, y + 18.0), &f.f11, th.muted, Align::L);
     // 日 / 周切换
     for (i, (label, weekly)) in [(tr("日", "Day"), false), (tr("周", "Week"), true)].into_iter().enumerate() {
-        let b = rect(r - 88.0 + i as f32 * 32.0, y, r - 56.0 + i as f32 * 32.0, y + 20.0);
+        let b = rect(r - 88.0 + i as f32 * 32.0, y, r - 56.0 + i as f32 * 32.0, y + 18.0);
         let on = a.cfg.weekly == weekly;
         p.fill(b, 5.0, if on { th.track } else if a.hover == Some(Hit::Toggle(weekly)) { th.hover } else { rgba(0.0, 0.0, 0.0, 0.0) });
         let tf = if on { &f.f12b } else { &f.f12 };
@@ -607,13 +672,12 @@ fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32
     }
     y += 26.0;
 
-    let gx = l + DAY_LABEL_W;
     // 月份标签：某一列的周一换了月份就标一下，太挤就跳过
     let mut last_x = -100.0;
     let mut last_m = 0;
     for c in 0..weeks {
         let (_, m, _) = time::civil(start + c * 7);
-        let x = gx + c as f32 * STEP;
+        let x = col(c);
         if m != last_m && x - last_x >= 30.0 {
             let ml = if en() { ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m as usize - 1].to_string() } else { format!("{m}月") };
             p.text(&ml, rect(x, y, x + 40.0, y + 14.0), &f.f11, th.muted, Align::L);
@@ -637,7 +701,7 @@ fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32
                     continue;
                 }
                 let v = vals[(d - start) as usize];
-                let cell = rect(gx + c as f32 * STEP, gy + rr as f32 * STEP, gx + c as f32 * STEP + CELL, gy + rr as f32 * STEP + CELL);
+                let cell = rect(col(c), gy + rr as f32 * STEP, col(c) + CELL, gy + rr as f32 * STEP + CELL);
                 let lv = level(v, &thr);
                 p.fill(cell, 2.0, if lv == 0 { th.faint } else { with_a(th.accent, [0.0, 0.32, 0.55, 0.78, 1.0][lv]) });
                 if sel == Some(d) || a.hover == Some(Hit::Day(d)) || (sel.is_none() && d == today) {
@@ -652,7 +716,7 @@ fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32
         let max = vals.iter().copied().max().unwrap_or(0).max(1);
         let hgt = 7.0 * STEP - (STEP - CELL);
         for (c, &v) in vals.iter().enumerate() {
-            let x = gx + c as f32 * STEP;
+            let x = col(c as i32);
             let wk = start + c as i32 * 7;
             let bh = if v == 0 { 2.0 } else { (hgt * v as f32 / max as f32).max(3.0) };
             let on = sel == Some(wk) || a.hover == Some(Hit::Week(wk)) || (sel.is_none() && c as i32 == weeks - 1);
@@ -679,17 +743,18 @@ fn heatmap_box(p: &P, a: &App, w: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32
     };
     p.text(&ftxt, rect(l, y, r - 110.0, y + 18.0), &f.f11, th.text, Align::L);
     if !a.cfg.weekly {
-        let mut x = r - 5.0 * STEP;
-        p.text(tr("多", "More"), rect(r - 40.0, y, r, y + 18.0), &f.f11, th.muted, Align::R);
-        x -= 26.0;
+        // 图例右边贴着内容右边（和热力图右边一样），格子两头离“少”“多”一样远
+        let mw = p.text(tr("多", "More"), rect(r - 40.0, y, r, y + 18.0), &f.f11, th.muted, Align::R);
+        let x = r - mw - 4.0 - 4.0 * STEP - CELL;
         p.text(tr("少", "Less"), rect(x - 40.0, y, x - 4.0, y + 18.0), &f.f11, th.muted, Align::R);
         for lv in 0..5 {
             let cx = x + lv as f32 * STEP;
-            p.fill(rect(cx, y + 3.5, cx + CELL, y + 3.5 + CELL), 2.0, if lv == 0 { th.faint } else { with_a(th.accent, [0.0, 0.32, 0.55, 0.78, 1.0][lv]) });
+            p.fill(rect(cx, y + 4.0, cx + CELL, y + 4.0 + CELL), 2.0, if lv == 0 { th.faint } else { with_a(th.accent, [0.0, 0.32, 0.55, 0.78, 1.0][lv]) });
         }
     }
 
-    y + 18.0
+    // 和其他框一样，最后一行字下面带 2 的行距
+    y + 20.0
 }
 
 fn project_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, Hit)>) -> f32 {
@@ -698,13 +763,14 @@ fn project_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, 
     let (sum, projects, _) = usage::breakdown(&a.days, today, today, a.cfg.cache_read);
     p.text(tr("今日项目消耗", "Today's projects"), rect(l, y, r - 90.0, y + 18.0), &f.f12b, th.text, Align::L);
     p.text(&fmt_tokens(sum), rect(l, y, r - 28.0, y + 18.0), &f.f11, th.muted, Align::R);
-    let close = rect(r - 20.0, y, r, y + 18.0);
-    p.text("×", close, &f.f12, th.muted, Align::C);
+    // 和热力图的叉一样
+    let close = rect(r - 20.0, y + 1.0, r, y + 19.0);
+    p.ink("\u{E711}", close, &f.icon, th.muted, Align::R);
     hits.push((close, Hit::Projects));
     y += 24.0;
     if projects.is_empty() {
         p.text(tr("今天暂无消耗", "No usage today"), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::L);
-        return y + 18.0;
+        return y + 20.0;
     }
     let max = projects.first().map_or(1, |e| e.1).max(1);
     let col = l + (r - l) * 0.47;
@@ -712,10 +778,12 @@ fn project_rows(p: &P, a: &App, w: f32, mut y: f32, hits: &mut Vec<(D2D_RECT_F, 
         p.text(usage::base_name(&name), rect(l, y, col - 8.0, y + 18.0), &f.f11, th.text, Align::L);
         let vw = p.text(&fmt_tokens(value), rect(l, y, r, y + 18.0), &f.f11, th.muted, Align::R);
         let bar = (r - vw - 12.0 - col).max(0.0);
-        p.fill(rect(col, y + 7.0, col + bar * value as f32 / max as f32, y + 11.0), 2.0, with_a(th.accent, 0.75));
+        // 和额度进度条一样，跟着数字笔画居中（比行框中线低 1）
+        p.fill(rect(col, y + 8.0, col + bar * value as f32 / max as f32, y + 12.0), 2.0, with_a(th.accent, 0.75));
         y += 22.0;
     }
-    y
+    // 行距是 4，框底只带 2（和其他框一样）
+    y - 2.0
 }
 
 #[cfg(test)]
