@@ -125,9 +125,6 @@ pub struct App {
     samples_reset: Option<i64>,
     /// 已提醒过的额度（种类, 重置时间），每个周期只提醒一次
     alerted: HashSet<(String, i64)>,
-    /// 点托盘气泡时要切过去的会话
-    /// 系统主题是不是深色（菜单和提示卡片跟它走；磁贴在低透明度时会强制深色）
-    pub sys_dark: bool,
     pub menu: Option<Box<menu::Menu>>,
     pub toasts: Vec<toast::Toast>,
     /// 还没弹出来的提示（最多同时显示 3 张，打扰模式下先攒着）
@@ -265,10 +262,11 @@ impl App {
     }
 
     fn load_theme(&mut self) {
-        self.sys_dark = self.force_dark.unwrap_or_else(|| sys::reg_dword(w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w!("AppsUseLightTheme")) != Some(1));
-        // 透明度低于 50% 时底色太薄，深色字在深色壁纸上看不清：不管系统主题，都用桌面图标那样的白字加阴影；同时关掉模糊，透出壁纸
+        let sys_dark = self.force_dark.unwrap_or_else(|| sys::reg_dword(w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w!("AppsUseLightTheme")) != Some(1));
+        // 透明度低于 50% 时底色太薄，深色字在深色壁纸上看不清：不管系统主题，都用桌面图标那样的白字加阴影；同时关掉模糊，透出壁纸。
+        // 菜单和提示卡片跟着磁贴实际用的深浅色走
         let o = self.cfg.opacity.clamp(menu::OPACITY_MIN, 100) as f32 / 100.0;
-        let dark = self.sys_dark || o < 0.5;
+        let dark = sys_dark || o < 0.5;
         self.theme = Theme::new(dark, o);
         unsafe {
             let d = BOOL::from(dark);
@@ -1281,7 +1279,6 @@ fn main() {
             dw,
             fonts,
             theme: Theme::new(true, 1.0),
-            sys_dark: true,
             menu: None,
             toasts: Vec::new(),
             force_dark: if args.iter().any(|a| a == "--light") { Some(false) } else if args.iter().any(|a| a == "--dark") { Some(true) } else { None },

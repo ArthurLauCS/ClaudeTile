@@ -106,7 +106,7 @@ pub fn pump(a: &mut App) {
             ) else {
                 return;
             };
-            let dark = BOOL::from(a.sys_dark);
+            let dark = BOOL::from(a.theme.dark);
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
             let corner = DWMWCP_ROUND;
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
@@ -150,16 +150,19 @@ fn draw(a: &App, t: &mut Toast) {
         if a.gfx.bind(&surf, dpi).is_err() {
             return;
         }
-        let th = Theme::panel(a.sys_dark);
+        // 跟磁贴实际用的深浅色走（透明度低于 50% 时磁贴强制深色）
+        let th = Theme::panel(a.theme.dark);
         let f = &a.fonts;
         let p = P { dc: &a.gfx.dc, br: &a.gfx.brush, dw: &a.dw, shadow: false };
         let w = rc.right as f32 * 96.0 / dpi;
         a.gfx.dc.BeginDraw();
         a.gfx.dc.Clear(Some(&th.tint));
-        // 左边的状态方块：颜色和托盘图标一致
+        // 左边的状态方块：颜色和托盘图标一致，竖直方向对着右边整段文字的笔画居中：
+        // 从应用名的字顶（行框 12 往下 4）到正文末行的字底（正文行框底）
         let (c, ink) = crate::icon::colors(t.note.tone);
         let glyph = t.note.glyph;
-        let ic = rect(16.0, 16.0, 52.0, 52.0);
+        let top = ((16.0 + 50.0 + body_h(a, &t.note.text)) / 2.0 - 18.0).round();
+        let ic = rect(16.0, top, 52.0, top + 36.0);
         p.fill(ic, 8.0, c);
         p.text(glyph, ic, &f.icon, ink, Align::C);
         p.text("ClaudeTile", rect(64.0, 12.0, w - 40.0, 28.0), &f.f11, th.muted, Align::L);

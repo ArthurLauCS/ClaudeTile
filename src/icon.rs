@@ -26,7 +26,7 @@ pub enum Tone {
 pub fn colors(tone: Tone) -> (D2D1_COLOR_F, D2D1_COLOR_F) {
     let white = rgba(1.0, 1.0, 1.0, 1.0);
     match tone {
-        Tone::Idle => (rgba(0.80, 0.42, 0.29, 1.0), white),
+        Tone::Idle => (rgba(0.851, 0.467, 0.341, 1.0), white),
         Tone::Busy => (rgba(0.12, 0.62, 0.32, 1.0), white),
         Tone::Waiting => (rgba(0.98, 0.78, 0.18, 1.0), rgba(0.12, 0.10, 0.05, 1.0)),
         Tone::Error => (rgba(0.86, 0.22, 0.18, 1.0), white),
