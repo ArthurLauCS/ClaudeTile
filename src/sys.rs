@@ -211,3 +211,31 @@ mod tests {
         assert_eq!(e.get("PATH"), std::env::var("PATH").ok().as_ref());
     }
 }
+
+/// Put text on the clipboard (CF_UNICODETEXT). Returns false when another program holds it open.
+pub fn copy_text(owner: HWND, text: &str) -> bool {
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    let w = wide(text);
+    unsafe {
+        if OpenClipboard(Some(owner)).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+        let ok = (|| {
+            let h = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2).ok()?;
+            let p = GlobalLock(h) as *mut u16;
+            if p.is_null() {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
+            let _ = GlobalUnlock(h);
+            // The system owns the block after a successful SetClipboardData.
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0))).ok()
+        })()
+        .is_some();
+        let _ = CloseClipboard();
+        ok
+    }
+}

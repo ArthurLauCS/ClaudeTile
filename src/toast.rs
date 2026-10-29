@@ -76,7 +76,7 @@ fn scale() -> f32 {
 fn body_h(a: &App, text: &str) -> f32 {
     let w16: Vec<u16> = text.encode_utf16().collect();
     unsafe {
-        let Ok(l) = a.dw.CreateTextLayout(&w16, &a.fonts.f12w, W - 76.0, 200.0) else { return 18.0 };
+        let Ok(l) = a.dw.CreateTextLayout(&w16, &a.fonts.wrap, W - 76.0, 200.0) else { return 18.0 };
         let mut m = DWRITE_TEXT_METRICS::default();
         let _ = l.GetMetrics(&mut m);
         m.height.min(3.0 * 17.0)
@@ -108,7 +108,7 @@ pub fn pump(a: &mut App) {
             };
             let dark = BOOL::from(a.theme.dark);
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
-            let corner = DWMWCP_ROUND;
+            let corner = DWMWCP_DONOTROUND;
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
             let life = if note.pid.is_some() { 10_000 } else { 6_000 };
             a.toasts.push(Toast { hwnd, surf: None, note, h, frame: 0, leaving: false, hover_close: false, tracking: false });
@@ -163,21 +163,24 @@ fn draw(a: &App, t: &mut Toast) {
         let glyph = t.note.glyph;
         let top = ((16.0 + 50.0 + body_h(a, &t.note.text)) / 2.0 - 18.0).round();
         let ic = rect(16.0, top, 52.0, top + 36.0);
-        p.fill(ic, 8.0, c);
+        p.fill(ic, 0.0, c);
         p.text(glyph, ic, &f.icon, ink, Align::C);
-        p.text("ClaudeTile", rect(64.0, 12.0, w - 40.0, 28.0), &f.f11, th.muted, Align::L);
-        p.text(&t.note.title, rect(64.0, 28.0, w - 16.0, 48.0), &f.f12b, th.text, Align::L);
+        p.text("ClaudeTile", rect(64.0, 12.0, w - 40.0, 28.0), &f.body, th.muted, Align::L);
+        p.text(&t.note.title, rect(64.0, 28.0, w - 16.0, 48.0), &f.bold, th.text, Align::L);
         let w16: Vec<u16> = t.note.text.encode_utf16().collect();
-        if let Ok(l) = a.dw.CreateTextLayout(&w16, &f.f12w, w - 76.0, 3.0 * 17.0) {
+        if let Ok(l) = a.dw.CreateTextLayout(&w16, &f.wrap, w - 76.0, 3.0 * 17.0) {
             p.color(th.muted);
             a.gfx.dc.DrawTextLayout(windows_numerics::Vector2 { X: 64.0, Y: 50.0 }, &l, &a.gfx.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
         // 右上角关闭：E711
         let x = close_rect(w);
         if t.hover_close {
-            p.fill(x, 5.0, th.hover);
+            p.fill(x, 0.0, th.raised);
         }
         p.text("\u{E711}", x, &f.icon, th.muted, Align::C);
+        // 1 px border: the popup floats above the desktop, so it carries its own edge
+        p.color(th.border);
+        a.gfx.dc.DrawRectangle(&rect(0.5, 0.5, w - 0.5, rc.bottom as f32 * 96.0 / dpi - 0.5), &a.gfx.brush, 1.0, None);
         let _ = a.gfx.dc.EndDraw(None, None);
         let _ = a.gfx.present(&surf);
     }

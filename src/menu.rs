@@ -4,7 +4,6 @@
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -12,21 +11,21 @@ use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
-use windows_numerics::Vector2;
 
 use crate::config::{en, tr};
 use crate::gfx::Surface;
-use crate::view::{Align, P, Theme, inside, rect, rgba, with_a};
+use crate::theme::{self, with_a};
+use crate::view::{Align, P, Theme, inside, rect};
 use crate::{App, app, sys};
 
 pub const MENU_CLASS: PCWSTR = w!("ClaudeTileMenu");
 const W: f32 = 272.0;
-const ROW: f32 = 34.0;
+const ROW: f32 = 28.0;
 const EDGE: f32 = 6.0;
 /// 内容左右边：文字、开关、分段条、分隔线、滑块（连同圆钮）都在 X 和 W - X 之间
 const X: f32 = 14.0;
 /// 滑块圆钮的半径：圆钮中心只走到离两边 THUMB 处，拉满也不出内容边
-const THUMB: f32 = 10.0;
+const THUMB: f32 = 4.0;
 pub const OPACITY_MIN: u32 = 20;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -108,8 +107,8 @@ fn alert_label(v: u32) -> &'static str {
 
 fn row_h(r: &Row) -> f32 {
     match r {
-        Row::Slider => 58.0,
-        Row::Seg(..) => 58.0,
+        Row::Slider => 52.0,
+        Row::Seg(..) => 54.0,
         Row::Sep => 9.0,
         _ => ROW,
     }
@@ -139,7 +138,7 @@ pub fn show(a: &mut App, pt: POINT) {
         let Ok(hwnd) = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP, MENU_CLASS, w!("ClaudeTile menu"), WS_POPUP | WS_THICKFRAME, x, y, w, h, Some(a.hwnd), None, None, None) else { return };
         let dark = BOOL::from(a.theme.dark);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
-        let corner = DWMWCP_ROUND;
+        let corner = DWMWCP_DONOTROUND;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
         a.menu = Some(Box::new(Menu { hwnd, surf: None, hits: Vec::new(), hover: None, focus: None, sliding: false, tracking: false, pressed: None }));
         let _ = ShowWindow(hwnd, SW_SHOW);
@@ -184,72 +183,69 @@ fn draw(a: &App, m: &mut Menu) {
             match row {
                 Row::Slider => {
                     let v = a.cfg.opacity;
-                    p.text(tr("磁贴透明度", "Tile opacity"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12, th.text, Align::L);
-                    p.text(&format!("{v}%"), rect(X, y + 4.0, w - X, y + 26.0), &f.f12b, th.muted, Align::R);
-                    let (l, r, cy) = (X + THUMB, w - X - THUMB, y + 42.0);
+                    p.text(tr("磁贴透明度", "Tile opacity"), rect(X, y + 2.0, w - X, y + 24.0), &f.body, th.text, Align::L);
+                    p.text(&format!("{v}%"), rect(X, y + 2.0, w - X, y + 24.0), &f.bold, th.muted, Align::R);
+                    let (l, r, cy) = (X + THUMB, w - X - THUMB, y + 36.0);
                     let x = l + (r - l) * (v - OPACITY_MIN) as f32 / (100 - OPACITY_MIN) as f32;
-                    p.fill(rect(X, cy - 2.0, w - X, cy + 2.0), 2.0, th.track);
-                    p.fill(rect(X, cy - 2.0, x, cy + 2.0), 2.0, th.accent);
-                    // 和 Win11 滑块一样：外圈底色加细边，中间一颗强调色圆点，悬停或拖动时变大。细边画在圆钮里面
-                    p.dot(x, cy, THUMB, th.tint);
-                    p.color(th.track);
-                    a.gfx.dc.DrawEllipse(&D2D1_ELLIPSE { point: Vector2 { X: x, Y: cy }, radiusX: THUMB - 0.5, radiusY: THUMB - 0.5 }, &a.gfx.brush, 1.0, None);
-                    p.dot(x, cy, if m.sliding || hot(Id::Opacity) { 7.0 } else { 5.5 }, th.accent);
-                    hits.push((rect(X - 4.0, y + 28.0, w - X + 4.0, y + 56.0), Id::Opacity));
+                    p.fill(rect(X, cy - 2.0, w - X, cy + 2.0), theme::RADIUS, th.raised);
+                    p.fill(rect(X, cy - 2.0, x, cy + 2.0), theme::RADIUS, th.accent);
+                    // 方块滑钮：悬停或拖动时画 1 px 强调色外框
+                    p.fill(rect(x - THUMB, cy - 8.0, x + THUMB, cy + 8.0), theme::RADIUS, th.accent);
+                    if m.sliding || hot(Id::Opacity) {
+                        p.color(th.text);
+                        a.gfx.dc.DrawRectangle(&rect(x - THUMB - 0.5, cy - 8.5, x + THUMB + 0.5, cy + 8.5), &a.gfx.brush, 1.0, None);
+                    }
+                    hits.push((rect(X - 4.0, y + 24.0, w - X + 4.0, y + 50.0), Id::Opacity));
                 }
                 Row::Switch(id, label, on) => {
-                    let r = rect(EDGE, y + 1.0, w - EDGE, y + rh - 1.0);
+                    let r = rect(1.0, y, w - 1.0, y + rh);
                     if hot(id) {
-                        p.fill(r, 5.0, th.hover);
+                        p.fill(r, theme::RADIUS, th.raised);
                     }
-                    p.text(label, rect(X, y, w - 64.0, y + rh), &f.f12, th.text, Align::L);
-                    let sw = rect(w - X - 36.0, y + rh / 2.0 - 10.0, w - X, y + rh / 2.0 + 10.0);
-                    if on {
-                        p.fill(sw, 10.0, th.accent);
-                        p.dot(sw.right - 10.0, y + rh / 2.0, 6.0, rgba(1.0, 1.0, 1.0, 1.0));
-                    } else {
-                        p.color(th.muted);
-                        a.gfx.dc.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(sw.left + 0.5, sw.top + 0.5, sw.right - 0.5, sw.bottom - 0.5), radiusX: 9.5, radiusY: 9.5 }, &a.gfx.brush, 1.0, None);
-                        p.dot(sw.left + 10.0, y + rh / 2.0, 5.0, th.muted);
-                    }
+                    // 终端式复选框：[x] / [ ]，开着是强调色
+                    p.text(if on { "[x]" } else { "[ ]" }, rect(X, y, X + 4.0 * f.cw, y + rh), &f.body, if on { th.accent } else { th.muted }, Align::L);
+                    p.text(label, rect(X + 4.0 * f.cw, y, w - X, y + rh), &f.body, th.text, Align::L);
                     hits.push((r, id));
                 }
                 Row::Seg(label, opts) => {
-                    p.text(label, rect(X, y + 2.0, w - X, y + 22.0), &f.f11, th.muted, Align::L);
-                    let bar = rect(X, y + 24.0, w - X, y + 52.0);
-                    p.fill(bar, 6.0, th.faint);
-                    let sw = (bar.right - bar.left - 4.0) / opts.len() as f32;
+                    p.text(label, rect(X, y + 2.0, w - X, y + 24.0), &f.body, th.muted, Align::L);
+                    let bar = rect(X, y + 26.0, w - X, y + 50.0);
+                    p.fill(bar, theme::RADIUS, th.raised);
+                    let sw = (bar.right - bar.left) / opts.len() as f32;
                     for (k, (id, text, on)) in opts.into_iter().enumerate() {
-                        let b = rect(bar.left + 2.0 + k as f32 * sw, bar.top + 2.0, bar.left + 2.0 + (k + 1) as f32 * sw, bar.bottom - 2.0);
+                        let b = rect(bar.left + k as f32 * sw, bar.top, bar.left + (k + 1) as f32 * sw, bar.bottom);
                         if on {
-                            p.fill(b, 4.0, with_a(th.accent, if th.dark { 0.28 } else { 0.18 }));
+                            p.fill(b, theme::RADIUS, th.inverse_bg);
                         } else if hot(id) {
-                            p.fill(b, 4.0, th.hover);
+                            p.fill(b, theme::RADIUS, th.border);
                         }
                         if focused == Some(id) {
-                            p.color(th.text);
-                            a.gfx.dc.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: b, radiusX: 4.0, radiusY: 4.0 }, &a.gfx.brush, 1.0, None);
+                            p.color(th.accent);
+                            a.gfx.dc.DrawRectangle(&rect(b.left + 0.5, b.top + 0.5, b.right - 0.5, b.bottom - 0.5), &a.gfx.brush, 1.0, None);
                         }
-                        p.text(text, b, if on { &f.f12b } else { &f.f12 }, if on { th.text } else { th.muted }, Align::C);
+                        p.text(text, b, if on { &f.bold } else { &f.body }, if on { th.inverse_fg } else { th.muted }, Align::C);
                         hits.push((b, id));
                     }
                 }
-                Row::Act(id, glyph, label) => {
-                    let r = rect(EDGE, y + 1.0, w - EDGE, y + rh - 1.0);
+                Row::Act(id, _glyph, label) => {
+                    let r = rect(1.0, y, w - 1.0, y + rh);
                     let danger = id == Id::Exit && hot(id);
                     if hot(id) {
-                        p.fill(r, 5.0, if danger { with_a(th.danger, 0.16) } else { th.hover });
+                        p.fill(r, theme::RADIUS, if danger { with_a(th.red, 0.16) } else { th.raised });
                     }
-                    let c = if danger { th.danger } else { th.text };
-                    // 图标笔画左边和开关行的文字左边对齐
-                    p.ink(glyph, rect(X, y, X + 20.0, y + rh), &f.icon, if danger { th.danger } else { th.muted }, Align::L);
-                    p.text(label, rect(X + 30.0, y, w - X, y + rh), &f.f12, c, Align::L);
+                    let c = if danger { th.red } else { th.text };
+                    // 提示符：命令行式的 $，不用图标
+                    p.text("$", rect(X, y, X + 2.0 * f.cw, y + rh), &f.body, if danger { th.red } else { th.accent }, Align::L);
+                    p.text(label, rect(X + 2.0 * f.cw, y, w - X, y + rh), &f.body, c, Align::L);
                     hits.push((r, id));
                 }
-                Row::Sep => p.fill(rect(X, y + 4.0, w - X, y + 5.0), 0.0, th.track),
+                Row::Sep => p.fill(rect(X, y + 4.0, w - X, y + 5.0), 0.0, th.border),
             }
             y += rh;
         }
+        // 1 px border: the popup floats above the desktop, so it carries its own edge
+        p.color(th.border);
+        a.gfx.dc.DrawRectangle(&rect(0.5, 0.5, w - 0.5, rc.bottom as f32 * 96.0 / dpi - 0.5), &a.gfx.brush, 1.0, None);
         let _ = a.gfx.dc.EndDraw(None, None);
         let _ = a.gfx.present(&surf);
         m.hits = hits;

@@ -7,6 +7,7 @@
 
 mod accounts;
 mod config;
+mod fontload;
 mod gfx;
 mod icon;
 mod json;
@@ -14,12 +15,14 @@ mod menu;
 mod quota;
 mod reset;
 mod sessions;
+mod skills;
 mod sync;
 mod sys;
 mod time;
 mod toast;
 mod usage;
 mod waker;
+mod theme;
 mod view;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -62,12 +65,14 @@ const WM_APP_WAKE: u32 = WM_APP + 4;
 const T_SESS: usize = 1;
 const T_SCAN: usize = 2;
 const T_TICK: usize = 3;
+/// “已复制” 提示的消失时间（一次性定时器）
+const T_COPY: usize = 4;
 /// 额度多久查一次（秒）：正常 2 分钟；失败 1 分钟后重试，被限流 5 分钟
 const POLL_OK: i64 = 120;
 const POLL_ERR: i64 = 60;
 const POLL_SLOW: i64 = 300;
 const EDGE: f32 = 6.0;
-const DEFAULT_W: f32 = 380.0;
+const DEFAULT_W: f32 = 400.0;
 
 enum Msg {
     Scan(Days, HashMap<String, SessionInfo>),
@@ -131,12 +136,19 @@ pub struct App {
     pub toasts: Vec<toast::Toast>,
     /// 还没弹出来的提示（最多同时显示 3 张，打扰模式下先攒着）
     pub notes: VecDeque<toast::Note>,
+    /// 用户自己写的技能（~/.claude/skills），15 秒一跳时按签名发现增删改
+    pub skills: Vec<skills::Skill>,
+    skills_sig: u64,
+    /// 刚复制了哪个技能的 /名称（行上显示 “已复制”）
+    pub copied: Option<String>,
+    /// 状态栏时钟上次画的分钟
+    clock_min: i64,
     pub hits: Vec<(D2D_RECT_F, Hit)>,
     pub hover: Option<Hit>,
     /// 三个框内容的自然高度（上一帧量的）、滚动位置、实际的 (顶, 高)
-    pub nat: [f32; 3],
-    pub scroll: [f32; 3],
-    boxes: [(f32, f32); 3],
+    pub nat: [f32; view::BOXES],
+    pub scroll: [f32; view::BOXES],
+    boxes: [(f32, f32); view::BOXES],
     /// 正在拖第几个框下方的拖动条；按下时的鼠标屏幕 y 和框高
     pub dragging: Option<usize>,
     drag0: (i32, f32),
@@ -276,7 +288,7 @@ impl App {
         unsafe {
             let d = BOOL::from(dark);
             let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &d as *const _ as _, 4);
-            let corner = DWMWCP_ROUND;
+            let corner = DWMWCP_DONOTROUND;
             let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
             // 系统亚克力（DWMSBT_TRANSIENTWINDOW）在窗口未激活时退成纯色，磁贴几乎总是未激活，
             // 所以用 SetWindowCompositionAttribute 的亚克力模糊：未公开，但从 Win10 起一直可用（和 Nookery 一样）
@@ -334,7 +346,7 @@ impl App {
                 self.nat = fr.nat;
                 self.invalidate();
             }
-            for i in 0..3 {
+            for i in 0..view::BOXES {
                 self.scroll[i] = self.scroll[i].min((self.nat[i] - self.boxes[i].1).max(0.0)).max(0.0);
             }
             // 高度跟着内容走。顶边以用户摆的位置为准，放不下才临时往上挪，内容变矮后回到原处；拖动窗口途中不动位置
@@ -391,6 +403,16 @@ impl App {
                 let _ = ShellExecuteW(Some(self.hwnd), w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL);
             },
             Hit::Pin => self.set_topmost(!self.cfg.topmost),
+            Hit::Skill(i) => {
+                if let Some(name) = self.skills.get(i).map(|s| s.name.clone()) {
+                    if sys::copy_text(self.hwnd, &format!("/{name}")) {
+                        self.copied = Some(name);
+                        unsafe { SetTimer(Some(self.hwnd), T_COPY, 1500, None) };
+                    } else {
+                        unsafe { MessageBeep(MB_ICONWARNING).ok() };
+                    }
+                }
+            }
             Hit::Split(_) => {}
         }
         self.invalidate();
@@ -790,7 +812,7 @@ impl App {
             }
             Id::Layout => {
                 self.cfg.heights = DEFAULT_HEIGHTS;
-                self.scroll = [0.0; 3];
+                self.scroll = [0.0; view::BOXES];
                 self.save_cfg();
             }
             Id::Hide => self.set_hidden(!self.cfg.hidden),
@@ -1010,6 +1032,18 @@ impl App {
         }
         self.check_sync();
         self.save_days();
+        // Skills: compare names and modification times; re-read only when something changed
+        let sig = skills::signature(&self.claude);
+        if sig != self.skills_sig {
+            self.skills_sig = sig;
+            self.skills = skills::load(&self.claude);
+            self.invalidate();
+        }
+        // The status bar clock shows minutes
+        if time::now() / 60 != self.clock_min {
+            self.clock_min = time::now() / 60;
+            self.invalidate();
+        }
     }
 }
 
@@ -1165,7 +1199,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let mut p = lparam_pt(lp);
                 let _ = ScreenToClient(hwnd, &mut p);
                 let y = p.y as f32 / scale(hwnd);
-                if let Some(i) = (0..3).find(|&i| y >= a.boxes[i].0 && y < a.boxes[i].0 + a.boxes[i].1) {
+                if let Some(i) = (0..view::BOXES).find(|&i| y >= a.boxes[i].0 && y < a.boxes[i].0 + a.boxes[i].1) {
                     let max = (a.nat[i] - a.boxes[i].1).max(0.0);
                     a.scroll[i] = (a.scroll[i] - (wp.0 >> 16) as i16 as f32 / 120.0 * 40.0).clamp(0.0, max);
                     a.invalidate();
@@ -1198,6 +1232,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                         let _ = KillTimer(Some(hwnd), T_SCAN);
                         a.scan_pending = false;
                         a.request_scan();
+                    }
+                    T_COPY => {
+                        let _ = KillTimer(Some(hwnd), T_COPY);
+                        a.copied = None;
+                        a.invalidate();
                     }
                     T_TICK => a.tick(),
                     _ => {}
@@ -1242,6 +1281,10 @@ fn dump(claude: &Path, fake: Option<&Path>, out: &Path) {
     for x in sessions::load(&session_dirs(claude)) {
         let info = sc.sessions.get(&x.id).cloned().unwrap_or_default();
         s += &format!("session {:?} title={:?} desktop_title={:?} tool={:?}\n", x, info.title, titles.get(&x.id), info.tool);
+    }
+    for k in skills::load(claude) {
+        s += &format!("skill /{} | {}
+", k.name, k.summary);
     }
     s += &format!("plan {:?}\n", quota::creds(claude).map(|c| c.plan));
     s += &format!("quota {:?}\n", quota::fetch(claude, quota::proxy(claude).as_deref(), fake));
@@ -1360,9 +1403,13 @@ fn main() {
             notes: VecDeque::new(),
             hits: Vec::new(),
             hover: None,
-            nat: [120.0, DEFAULT_HEIGHTS[1], 400.0],
-            scroll: [0.0; 3],
-            boxes: [(0.0, 0.0); 3],
+            nat: [120.0, DEFAULT_HEIGHTS[1], 400.0, DEFAULT_HEIGHTS[3]],
+            scroll: [0.0; view::BOXES],
+            boxes: [(0.0, 0.0); view::BOXES],
+            skills: skills::load(&claude),
+            skills_sig: skills::signature(&claude),
+            copied: None,
+            clock_min: 0,
             dragging: None,
             drag0: (0, 0.0),
             changed_noted: false,

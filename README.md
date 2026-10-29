@@ -2,21 +2,22 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A desktop status tile for Claude on Windows: see what your Claude Code sessions are doing (CLI and the Claude desktop app), your 5-hour and weekly usage limits, and a GitHub-style heatmap of the tokens you use every day.
+A desktop status tile for Claude on Windows: see what your Claude Code sessions are doing (CLI and the Claude desktop app), your 5-hour and weekly usage limits, a GitHub-style heatmap of the tokens you use every day, and a list of your own Claude Code skills so you can recall which one to run.
 
 <p align="center">
   <img src="docs/images/tile-en.png" width="380" alt="ClaudeTile showing usage limits, sessions and a token heatmap">
 </p>
 
-- A single ~720 KB exe, about 13 MB of private memory, close to 0% CPU when idle.
+- A ~850 KB exe, about 18 MB of private memory, close to 0% CPU when idle. The installer is about 30 MB because it bundles the fonts.
 - Follows the system light / dark theme; adjustable opacity, down to a see-through tile.
+- Styled as a developer terminal: monospace text, square corners, `$` section headings, a status bar at the bottom. Interface text is set in Sarasa Mono SC (Chinese characters exactly two cells wide, so columns line up); session titles and skill summaries use LXGW WenKai Mono. Both ship with the app (SIL OFL 1.1, see `THIRD_PARTY_NOTICES.txt`); without the `fonts` folder it falls back to Cascadia Mono and Microsoft YaHei UI.
 - English and Chinese interface.
 
 > ClaudeTile is an unofficial community tool. It is not affiliated with or endorsed by Anthropic. "Claude" is a trademark of Anthropic.
 
 ## Install
 
-Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/ArthurLauCS/ClaudeTile/releases/latest) and run it. Requires 64-bit Windows 10 or 11; Windows 11 is recommended (rounded corners and shadows).
+Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/ArthurLauCS/ClaudeTile/releases/latest) and run it. Requires 64-bit Windows 10 or 11; Windows 11 is recommended.
 
 - The installer is not signed with a commercial code-signing certificate, so Windows may show "Windows protected your PC". Click **More info** → **Run anyway**.
 - It installs for the current user only and does not ask for administrator permission.
@@ -25,7 +26,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 
 ## What it shows
 
-**Account details.** The main panel follows Sync / Wake-up → Accounts → Sessions → Token heatmap / Today's projects → Reset signals, separated by thin rules. Each account shows its email, plan, 5-hour and weekly usage percentages, bars, and reset times. Hovering a card highlights it; the current account has a stronger highlight. Unavailable fields stay explicitly unavailable rather than appearing as zero.
+**Account details.** The main panel follows Sync / Wake-up → Accounts → Sessions → Token heatmap / Today's projects → Skills → Reset signals → status bar, separated by thin rules. Each account shows its email, plan, 5-hour and weekly usage percentages, bars, and reset times. Hovering a card highlights it; the current account is marked with ▸. Unavailable fields stay explicitly unavailable rather than appearing as zero.
 
 **Accounts.** **Add account…** runs `claude auth login` with a separate account directory. Each account has its own full quota display; clicking another account switches the local Claude Code login for new sessions. VPS token identity and quota are queried on the server; each token gets a VPS card, labelled with its last 4 characters, only when usage and reset times are available, and an account already shown is not repeated. Failed or unauthorized usage queries hide the card; missing profile scope never substitutes a local identity. Local account switching does not replace the VPS token.
 
@@ -36,6 +37,8 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 **Sessions.** Every running Claude Code session, from terminals and from the Claude desktop app: title, project, the tool it is running right now, and how long it has been in its current state. Sessions that need you (a permission prompt, a question) are listed first. Click a session to jump to its window.
 
 **Token heatmap and today's projects.** Switch between daily cells and weekly bars; hover or select a period to see its total. A separate list shows today's project usage. Each section has a close button and can be restored independently from the right-click menu; preferences persist. Cache reads are excluded unless enabled with the Cache switch. Daily statistics retain the Windows local date; quota reset, sync and wake-up times use the time zone chosen in the menu (Beijing by default, or local / UTC).
+
+**Skills.** Your own Claude Code skills, read from `~/.claude/skills/*/SKILL.md` (frontmatter `name` and `description`): `/name` plus the first sentence of the description, one skill per two lines. Click a row to copy `/name` to the clipboard (the row shows "[0] copied" for a moment), then paste it into Claude Code. Left out: folders without `SKILL.md`, links and junctions (skills installed by other tools), names starting with `lark-`, and skills set to `"off"` under `skillOverrides` in `settings.json`. Added, removed or edited skills show up within 15 seconds; the folder is not watched, only checked on the existing 15-second tick. The section is hidden when there are none.
 
 **Tray icon.** Shows the 5-hour usage percentage. Its color shows the state:
 
@@ -56,7 +59,7 @@ Download `ClaudeTile-Setup-<version>.exe` from [Releases](https://github.com/Art
 
 - **Move:** drag the tile anywhere. It always stays fully on screen.
 - **Width:** drag the left or right edge. The heatmap shows more weeks when wider.
-- **Section heights:** drag the gap below the limits, sessions or token section. Each section scrolls with the mouse wheel when its content is taller. The sessions section shows 5 rows by default.
+- **Section heights:** drag the gap below the limits, sessions, token or skills section. Each section scrolls with the mouse wheel when its content is taller. The sessions section shows 5 rows by default.
 - **Always on top:** the pin in the upper-right corner. When unpinned, the tile behaves like a normal window: clicking or dragging it brings it above other windows, and clicking another window covers it again.
 - **Menu:** right-click the tile or the tray icon. Opacity slider, always on top, auto-start idle 5h windows, start with Windows, usage alert level, language, time zone, add account, refresh, reset layout, hide the tile, exit. Switches and options keep the menu open, so you can change several at once; press Esc or click elsewhere to close it.
 - **Show / hide:** left-click the tray icon.
@@ -93,6 +96,7 @@ cargo build --release          # target\release\claudetile.exe
 cargo test --release           # unit tests
 ```
 
+- Fonts: run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fonts.ps1` once. It downloads Sarasa Mono SC and LXGW WenKai Mono (about 76 MB, SHA-256 checked) into `assets/fonts` (not in git). A dev run reads them from there, the installer copies them to a `fonts` folder next to the exe, and `scripts/installer.ps1` runs the script for you. Without them the tile still runs, in Cascadia Mono.
 - App icon: edit `assets/icon.svg` (40 px and up) or `assets/icon-small.svg` (16–32 px), then run `python scripts/icon.py`. Needs Chrome, Pillow and the Windows SDK (`rc.exe`). The generated `assets/app.res` is committed, so a normal build does not need the SDK.
 - Installer: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/installer.ps1`. Needs [Inno Setup 6](https://jrsoftware.org/isinfo.php). Output: `target\installer\ClaudeTile-Setup-<version>.exe`.
 

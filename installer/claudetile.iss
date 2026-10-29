@@ -49,6 +49,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 [Files]
 Source: "..\target\release\claudetile.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+; 字体由 scripts\fonts.ps1 下载到 assets\fonts；缺了字体程序会退回系统字体，所以先跑那个脚本再打包
+Source: "..\assets\fonts\*.ttf"; DestDir: "{app}\fonts"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\ClaudeTile"; Filename: "{app}\claudetile.exe"

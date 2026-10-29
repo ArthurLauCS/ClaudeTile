@@ -20,8 +20,8 @@ pub struct Config {
     pub hidden: bool,
     /// 额度用到这个百分比时提醒
     pub alert: u32,
-    /// 额度、会话、Token 三个框拖出来的高度（DIP），0 = 跟着内容
-    pub heights: [f32; 3],
+    /// 额度、会话、Token、技能四个框拖出来的高度（DIP），0 = 跟着内容
+    pub heights: [f32; 4],
     /// 磁贴底色的不透明度（20～100）
     pub opacity: u32,
     /// 各账号的 5 小时窗口没在跑时自动打卡
@@ -30,8 +30,8 @@ pub struct Config {
     pub tz: u32,
 }
 
-/// 会话框默认最多 5 行，多了滚动
-pub const DEFAULT_HEIGHTS: [f32; 3] = [0.0, 222.0, 0.0];
+/// 会话框默认最多 5 行（含 24 的标题），技能框 4 行，多了滚动
+pub const DEFAULT_HEIGHTS: [f32; 4] = [0.0, 224.0, 0.0, 184.0];
 
 impl Default for Config {
     fn default() -> Config {
@@ -65,8 +65,11 @@ impl Config {
                 "opacity" => c.opacity = v.parse().unwrap_or(100),
                 "heights" => {
                     let n: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-                    if let [a, b, h] = n[..] {
-                        c.heights = [a, b, h];
+                    // 老版本只存三个框
+                    match n[..] {
+                        [a, b, h] => c.heights = [a, b, h, DEFAULT_HEIGHTS[3]],
+                        [a, b, h, k] => c.heights = [a, b, h, k],
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -77,7 +80,7 @@ impl Config {
 
     pub fn to_text(&self) -> String {
         let b = |v: bool| if v { "1" } else { "0" };
-        let mut s = format!("pos|{},{},{}\ntopmost|{}\ncache_read|{}\nweekly|{}\nhidden|{}\nping|{}\nalert|{}\nheights|{},{},{}\nopacity|{}\n", self.pos[0], self.pos[1], self.pos[2], b(self.topmost), b(self.cache_read), b(self.weekly), b(self.hidden), b(self.ping), self.alert, self.heights[0], self.heights[1], self.heights[2], self.opacity);
+        let mut s = format!("pos|{},{},{}\ntopmost|{}\ncache_read|{}\nweekly|{}\nhidden|{}\nping|{}\nalert|{}\nheights|{},{},{},{}\nopacity|{}\n", self.pos[0], self.pos[1], self.pos[2], b(self.topmost), b(self.cache_read), b(self.weekly), b(self.hidden), b(self.ping), self.alert, self.heights[0], self.heights[1], self.heights[2], self.heights[3], self.opacity);
         s += &format!("heatmap|{}\nprojects|{}\ntz|{}\n", b(self.heatmap), b(self.projects), self.tz);
         if let Some(en) = self.en {
             s += if en { "lang|en\n" } else { "lang|zh\n" };
@@ -107,7 +110,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let c = Config { pos: [-10, 20, 400], topmost: true, en: Some(true), cache_read: true, weekly: true, heatmap: false, projects: true, hidden: false, alert: 90, heights: [0.0, 150.5, 300.0], opacity: 45, ping: true, tz: 1 };
+        let c = Config { pos: [-10, 20, 400], topmost: true, en: Some(true), cache_read: true, weekly: true, heatmap: false, projects: true, hidden: false, alert: 90, heights: [0.0, 150.5, 300.0, 120.0], opacity: 45, ping: true, tz: 1 };
         assert_eq!(Config::parse(&c.to_text()), c);
         assert_eq!(Config::parse("\u{feff}pos|1,2\nbad\nlang|zh"), Config { en: Some(false), ..Default::default() });
     }
