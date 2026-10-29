@@ -2,21 +2,22 @@
 
 [English](README.md) | 简体中文
 
-Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（终端 CLI 和 Claude 桌面版都算）、5 小时和每周额度，还有一张像 GitHub 贡献图那样的每日 Token 热力图。
+Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（终端 CLI 和 Claude 桌面版都算）、5 小时和每周额度，一张像 GitHub 贡献图那样的每日 Token 热力图，以及你自己写的 Claude Code 技能列表，想不起该用哪个 skill 时看一眼磁贴。
 
 <p align="center">
   <img src="docs/images/tile-zh.png" width="380" alt="ClaudeTile：额度、会话和 Token 热力图">
 </p>
 
-- 单个约 720 KB 的 exe，私有内存约 13 MB，空闲时 CPU 接近 0%。
+- exe 约 850 KB，私有内存约 18 MB，空闲时 CPU 接近 0%。安装包约 30 MB，因为带了字体。
 - 跟随系统深浅色；透明度可调，可以调到透出壁纸。
+- 开发者终端风格：等宽字体、直角、`$` 开头的栏目标题、底部状态栏。界面文字用更纱等距黑体（汉字正好两格宽，列才对得齐），会话标题和技能摘要用霞鹜文楷等宽。两款字体随程序安装（SIL OFL 1.1，见 `THIRD_PARTY_NOTICES.txt`）；没有 `fonts` 文件夹时退回 Cascadia Mono 和微软雅黑 UI。
 - 中英文界面。
 
 > ClaudeTile 是非官方的社区工具，与 Anthropic 没有关联，也未获其认可。“Claude”是 Anthropic 的商标。
 
 ## 安装
 
-从 [Releases](https://github.com/ArthurLauCS/ClaudeTile/releases/latest) 下载 `ClaudeTile-Setup-<版本>.exe` 运行。需要 64 位 Windows 10 或 11，推荐 Windows 11（有圆角和阴影）。
+从 [Releases](https://github.com/ArthurLauCS/ClaudeTile/releases/latest) 下载 `ClaudeTile-Setup-<版本>.exe` 运行。需要 64 位 Windows 10 或 11，推荐 Windows 11。
 
 - 安装包没有商业代码签名证书，Windows 可能提示“Windows 已保护你的电脑”，点 **更多信息** → **仍要运行**。
 - 只为当前用户安装，不要管理员权限。
@@ -25,7 +26,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 ## 显示什么
 
-**账号详情。** 主界面按“同步 / 唤醒 → 账号 → 会话 → Token 热力图 / 今日项目消耗 → 重置信息”排列，分区用细线分隔。每个账号显示邮箱、订阅等级、5 小时及周额度百分比、进度条和重置时间；鼠标移上去卡片轻微高亮，当前账号底色更深；无法查询的字段明确留空，不显示为零。
+**账号详情。** 主界面按“同步 / 唤醒 → 账号 → 会话 → Token 热力图 / 今日项目消耗 → 技能 → 重置信息 → 状态栏”排列，分区用细线分隔。每个账号显示邮箱、订阅等级、5 小时及周额度百分比、进度条和重置时间；鼠标移上去卡片轻微高亮，当前账号前面标 ▸；无法查询的字段明确留空，不显示为零。
 
 **多账号。** 菜单里的 **添加账号…** 通过 `claude auth login` 登录独立账号。每个账号单独显示完整额度；点击其他账号会切换 Claude Code 的登录，新会话使用它，已运行的会话需重开。VPS Token 的账号由服务器查询；每个 Token 仅在拿到有效额度与重置时间时显示一张 VPS 账号卡片（标注 Token 末 4 位），已显示的账号不重复；查询失败或没有权限时隐藏；缺少 profile 权限时不会借用本机身份。切换本机账号不会替换 VPS Token。
 
@@ -36,6 +37,8 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 **会话。** 所有正在运行的 Claude Code 会话，终端里的和 Claude 桌面版里的都有：标题、项目、正在调用的工具、在当前状态里待了多久。等你处理的（要你确认权限、要你回答）排在最前。点一个会话就切到它所在的窗口。
 
 **Token 热力图与今日项目消耗。** 热力图支持日 / 周切换，点击或悬停查看对应时段合计；下面独立列出今日各项目的消耗。两个区域各有 × 关闭按钮，可以在右键菜单分别重新打开，选择会保存。缓存读取默认不计，可用“缓存”开关切换。日期分组沿用 Windows 本地日期；额度重置、同步和唤醒时间按菜单里选的时区显示（默认北京时间，可选本机 / UTC）。
+
+**技能。** 读取 `~/.claude/skills/*/SKILL.md` 里你自己写的技能（frontmatter 的 `name` 和 `description`）：每个技能两行，`/名称` 加描述的第一句话。点一行把 `/名称` 复制到剪贴板（该行短暂显示“[0] 已复制”），再粘贴到 Claude Code 里用。不列出：没有 `SKILL.md` 的文件夹、符号链接和目录联接（其他工具装的技能）、名字以 `lark-` 开头的、以及 `settings.json` 的 `skillOverrides` 里设为 `"off"` 的。增删改技能后 15 秒内更新：不监视目录，只在已有的 15 秒一跳里检查。没有技能时这一栏不显示。
 
 **托盘图标。** 数字是 5 小时额度的百分比，底色表示状态：
 
@@ -56,7 +59,7 @@ Windows 上的 Claude 状态磁贴：看 Claude Code 各个会话在做什么（
 
 - **移动：** 按住磁贴拖到任意位置，整块始终留在屏幕内。
 - **宽度：** 拖左右边缘。越宽，热力图显示的周数越多。
-- **各栏高度：** 拖额度、会话、Token 各栏下方的空隙。内容比栏高时用滚轮滚动。会话栏默认显示 5 行。
+- **各栏高度：** 拖额度、会话、Token、技能各栏下方的空隙。内容比栏高时用滚轮滚动。会话栏默认显示 5 行。
 - **置顶：** 右上角的图钉。不置顶时磁贴和普通窗口一样：点击或拖动磁贴时它盖到其他窗口上面，点别的窗口后再被盖住。
 - **菜单：** 右键磁贴或托盘图标。透明度滑块、置顶、空闲时自动打卡、开机自启、额度提醒、语言、时区、添加账号、立即刷新、恢复默认布局、隐藏磁贴、退出。点开关和选项时菜单不关，可以连着改；按 Esc 或点别处关闭。
 - **显示 / 隐藏：** 左键点托盘图标。
@@ -93,6 +96,7 @@ cargo build --release          # target\release\claudetile.exe
 cargo test --release           # 单元测试
 ```
 
+- 字体：先运行一次 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fonts.ps1`，它把更纱等距黑体和霞鹜文楷等宽（约 76 MB，校验 SHA-256）下载到 `assets/fonts`（不入库）。开发运行从那里读，安装包把它们装到 exe 旁的 `fonts` 文件夹，`scripts/installer.ps1` 会自动跑这个脚本。没有字体时磁贴照常运行，用 Cascadia Mono。
 - 应用图标：改 `assets/icon.svg`（40px 及以上）或 `assets/icon-small.svg`（16～32px），再运行 `python scripts/icon.py`。需要 Chrome、Pillow 和 Windows SDK（`rc.exe`）。生成的 `assets/app.res` 已入库，平时编译不需要 SDK。
 - 安装包：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/installer.ps1`，需要 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。产物在 `target\installer\ClaudeTile-Setup-<版本>.exe`。
 
